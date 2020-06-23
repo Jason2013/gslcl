@@ -76,6 +76,7 @@ ARMv7/ARMv7a Linux-generic
 ============
 
 包管理器应用程序可用于多种系统，也是一种获取和安装LLVM/Clang二进制文件的容易的方法。对于大多数用户，通常这是推荐的安装LLVM和Clang的方法，因为它自动处理依赖关系，确保你的系统兼容所安装的二进制文件。
+
 例如，在Ubuntu（10.04以上），你应该用下面的命令：
 
 .. code-block:: bash
@@ -97,6 +98,7 @@ Linux
 ^^^^^
 
 Debian和Ubuntu Linux（i386和amd64）仓库可用于下载从LLVM subversion仓库编译得到的快照。你可以在http://llvm.org/apt查看详情。
+
 例如，要想在Ubuntu 13.10上安装LLVM和Clang的按天发布的版本，可以用下面的命令序列：
 
 .. code-block:: bash
@@ -230,16 +232,22 @@ Git
     $ cd where-you-want-to-build
 
 在这一节，我们会创建一个单独的目录来存放目标文件，即编译中间副产品。不要在存放源代码的相同的文件夹中编译。使用下面的命令，其中的参数在前面小节解释过了：
-$ /PATH_TO_SOURCE/configure --disable-optimized --prefix=../where-youwant-
-to-install
-$ make && make install
+
+.. code-block:: bash
+
+    $ /PATH_TO_SOURCE/configure --disable-optimized --prefix=../where-youwant-
+    to-install
+    $ make && make install
 
 可选地，你可以用make -jN命令来启动最多N个编译器实例并行地工作，以加速编译过程。例如，你可以试验make -j4（或者更大一点的数字），如果你的处理器是四核的。
 
 编译并安装所有组件需要一点时间。注意，编译脚本也会处理你所下载的存放在LLVM源代码树中的其它仓库目录。不需要单独地配置Clang或Clang附加工具。
 为了检查编译是否成功，使用shell命令echo $?总是可行的。shell变量$?返回你在shell会话中运行的最后一个进程的退出码，而echo将它打印在屏幕上。因此，重要的是在你的make命令之后立即运行这个命令。如果编译成功了，make命令总是返回0，如其它成功完成执行的程序一样：
-$ echo $?
-0
+
+.. code-block:: bash
+
+    $ echo $?
+    0
 
 配置你的shell的PATH环境变量，使得能够轻松地访问刚刚安装的二进制文件，然后通过查询Clang版本来完成第一次测试：
 
@@ -253,15 +261,18 @@ $ echo $?
 --------------------------
 
 LLVM给出了另一种交叉平台编译系统，代替传统的配置脚本，它是基于CMake的。CMake可以为你的平台生成专用的Makefile，其生成方法和配置脚本一样，但是CMake更加灵活，还可以为其它系统生成编译文件，例如Ninja，Xcode，和Visual Studio。
-另一方面，Ninja是一种小巧且快速的编译系统，代替GNU Make和它关联的Makefile。如果你对Ninja背后的动机和故事感到好奇，就去访问http://aosabook.org/en/posa/ninja.html。CMake可以被配置为生成Ninja编译文件，而不是Makefile，让你可以选择使用CMake和GNU Make，或者CMake和Ninja。
+
+另一方面，Ninja是一种小巧且快速的编译系统，代替GNU Make和它关联的Makefile。如果你对Ninja背后的动机和故事感到好奇，就去访问 http://aosabook.org/en/posa/ninja.html 。CMake可以被配置为生成Ninja编译文件，而不是Makefile，让你可以选择使用CMake和GNU Make，或者CMake和Ninja。
+
 然而，利用后者，可以让你享受非常快的来回的时光，当你修改LLVM源代码并重编译它的时候。这种场景会尤其有用，如果你想要在LLVM源代码树内部开发一个工具或者插件，并且依靠LLVM编译系统来编译你的项目。
+
 确定你已经安装CMake和Ninja。例如，在Ubuntu系统上，运行下面的命令：
 
 .. code-block:: bash
 
     $ sudo apt-get install cmake ninja-build
 
-LLVM和CMake还提供了若干编译定制选项。完整的选项列表可以从http://llvm.org/docs/CMake.html得到。下面给出了一个选项列表，它和我们之前介绍的基于自动工具的编译系统的选项集相对应。这些选项的默认值和相应的配置脚本选项的默认值一样：
+LLVM和CMake还提供了若干编译定制选项。完整的选项列表可以从 http://llvm.org/docs/CMake.html 得到。下面给出了一个选项列表，它和我们之前介绍的基于自动工具的编译系统的选项集相对应。这些选项的默认值和相应的配置脚本选项的默认值一样：
 
 * ``CMAKE_BUILD_TYPE`` ：这是一个字符串值，指定编译类型是Release还是Debug。Release编译等价于配置脚本中的 ``--enable-optimized`` 选项，而Debug编译等价于 ``--disable-optimized`` 选项。
 * ``CMAKE_ENABLE_ASSERTIONS`` ：这是一个布尔值，对应 ``--enable-assertions`` 配置选项。
@@ -275,6 +286,7 @@ LLVM和CMake还提供了若干编译定制选项。完整的选项列表可以�
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 我们将重新产生之前为配置脚本给出的相同的例子，但是这次，我们将用CMake和Ninja编译它：
+
 首先，创建一个文件夹以存放编译和安装文件：
 
 .. code-block:: bash
@@ -333,6 +345,7 @@ LLVM和CMake还提供了若干编译定制选项。完整的选项列表可以�
     sanitizer::u64 __sanitizer::OFF64_T
 
 为了解决这个错误，你要改动LLVM源代码以规避这个问题（如果你上网搜索或者亲自去查看源代码，你会找到解决它的方法），但是你不想修正你想要编译的每一个LLVM版本。更新你的编译器简单多了，肯定也是最适当的解决方案。
+
 一般来说，当你在一个稳定版本中遇到编译错误时，就专心地去寻找你的系统和推荐的设置之间的差异。记住，稳定的版本已经在若干平台上测试过了。另一方面，如果你尝试着编译一个不稳定的SVN发布版本，那么一个近期的提交破坏了在你的系统上的编译是可能的，而回退到一个可用的SVN发布版本也是容易的。
 
 利用其它的Unix方法
@@ -348,13 +361,11 @@ LLVM和CMake还提供了若干编译定制选项。完整的选项列表可以�
 
 * 对于使用Homebrew的Mac OS X，我们可以使用下面的命令：
 
-
     .. code-block:: bash
 
         $ brew install llvm -with-clang
 
 * 对于使用ports的FreeBSD 9.1，我们可以使用下面的命令（注意，从FreeBSD 10开始，Clang是默认的编译器，因此它已经安装好了）：
-
 
     .. code-block:: bash
 
@@ -364,7 +375,6 @@ LLVM和CMake还提供了若干编译定制选项。完整的选项列表可以�
         $ make install
 
 * 对于Gentoo Linux，我们可以使用下面的命令：
-
 
     .. code-block:: bash
 
@@ -379,24 +389,39 @@ Windows和Microsoft Visual Studio
 2. 下载并安装官方的CMake工具二进制发布版本，下载地址http://www.cmake.org。在安装的时候，务必勾选Add CMake to the system PATH for all users选项。
 3. CMake会生成Visual Studio所需的项目文件以配置并编译LLVM。首先，运行cmake-gui图形工具。然后，点击Browse Source …按钮，选择LLVM源代码目录。接着，点击Browse Build按钮，选择一个存放CMake生成文件的目录，将来Visual Studio会使用它，如下面的截屏所示：
 
+.. figure:: ch01/cmake_2.8.11.2_config.png
+   :align: center 
+
 4. 点击Add Entry并定义CMAKE_INSTALL_PREFIX以指定LLVM工具的安装路径，如下面的截屏所示：
+
+.. figure:: ch01/add_cache_entry1.png
+   :align: center 
 
 5. 此外，可以通过LLVM_TARGETS_TO_BUILD指定支持的目标集合，如下面的截屏所示。可选地，你可以添加任意其它的项来定义我们之前讨论过的CMake参数。
 
+.. figure:: ch01/add_cache_entry2.png
+   :align: center 
+
 6. 点击Configure按钮。弹出的窗口询问使用什么项目生成器和编译器；选择Visual Studio 2012（选项Visual Studio 11）和Use default native compilers。点击Finish，如下面的截屏所示：
 
+.. figure:: ch01/cmake-gui.png
+   :align: center 
 
-对于Visual Studio 2013，使用Visual Studio 12生成器。生成器的名字使用Visual Studio版本，而不是它的商业名称。
+.. note::
+
+    对于Visual Studio 2013，使用Visual Studio 12生成器。生成器的名字使用Visual Studio版本，而不是它的商业名称。
 
 7. 在配置完成之后，点击Generate按钮。这样，Visual Studio solution文件，LLVM.sln，会被写到指定的build目录中。进入这个目标，双击这个文件；它会在Visual Studio中打开LLVM solution。
 8. 要想自动地编译并安装LLVM/Clang，在左边的树视图中，展开CMakePredefinedTargets，右击INSTALL，选择Build选项。预定义的INSTALL目标会指示系统编译并安装所有LLVM/Clang的工具和库，如下面的截屏所示：
-
 9. 要想有选择地编译并安装指定的工具和库，就在左侧的树视图窗口中选择相应的项，右击它并选择Build选项。
 10. 将LLVM二进制安装目录添加到系统的PATH环境变量。
-    在我们的例子中，安装目录是C:\Program Files (X86)\LLVM\install\bin。若要不更新PATH环境变量就测试安装成功与否，就在命令提示窗口运行下面的命令：
 
-C:>"C:\Program Files (x86)\LLVM\install\bin\clang.exe" –v
-clang version 3.4…
+在我们的例子中，安装目录是C:\Program Files (X86)\LLVM\install\bin。若要不更新PATH环境变量就测试安装成功与否，就在命令提示窗口运行下面的命令：
+
+.. code-block:: bash
+
+    C:>"C:\Program Files (x86)\LLVM\install\bin\clang.exe" –v
+    clang version 3.4…
 
 Mac OS X和Xcode
 ================
@@ -404,7 +429,7 @@ Mac OS X和Xcode
     尽管利用前面描述的常规Unix指令可以为Mac OS X编译LLVM，但是也可以利用Xcode：
 
 1. 获取Xcode的副本。
-2. 下载并安装官方CMake工具的二进制发布，下载地址http://www.cmake.org。不要忘记勾选Add CMake to the system PATH for all users选项。
+2. 下载并安装官方CMake工具的二进制发布，下载地址 http://www.cmake.org 。不要忘记勾选Add CMake to the system PATH for all users选项。
 
 3. CMake能够生成Xcode的项目文件。首先，运行cmake-gui图形工具。然后，如前面的截屏所示，点击Browse Source按钮并选择LLVM源代码目录。接着，点击Browse Build按钮并选择存放CMake生成文件的目录，Xcode会使用这些文件。
 4. 点击Add Entry，定义CMAKE_INSTALL_PREFIX以指定LLVM工具的安装路径。
@@ -421,18 +446,20 @@ Mac OS X和Xcode
 10. 接下来，点击Product菜单，然后选择Build选项，如下面的截屏所示：
 
 11. 将LLVM二进制文件的安装目录添加到系统的PATH环境变量中。
-    在我们的例子中，安装二进制的文件夹是/Users/Bruno/llvm/install/bin。为了测试安装是否成功，从安装目录运行clang工具，如下所示：
 
-    .. code-block:: bash
+在我们的例子中，安装二进制的文件夹是/Users/Bruno/llvm/install/bin。为了测试安装是否成功，从安装目录运行clang工具，如下所示：
 
-        $ /Users/Bruno/llvm/install/bin/clang –v
-        clang version 3.4…
+.. code-block:: bash
+
+    $ /Users/Bruno/llvm/install/bin/clang –v
+    clang version 3.4…
 
 总结
 ****
 
-    本章详细地说明了如何安装LLVM和Clang，演示了如何使用官方预编译安装包的现成二进制文件，第三方的包管理器，以及每天的代码快照。此外，我们详细介绍了如何在不同的操作系统环境下从源代码编译LLVM项目，利用标准的Unix工具和IDE。
-    在下一章，我们将介绍如何安装其它的基于LLVM的项目，你可能会用到它们。典型地，这些外部项目实现了一些工具，它们不属于主LLVM SVN仓库，并且是单独发布的。
+本章详细地说明了如何安装LLVM和Clang，演示了如何使用官方预编译安装包的现成二进制文件，第三方的包管理器，以及每天的代码快照。此外，我们详细介绍了如何在不同的操作系统环境下从源代码编译LLVM项目，利用标准的Unix工具和IDE。
+
+在下一章，我们将介绍如何安装其它的基于LLVM的项目，你可能会用到它们。典型地，这些外部项目实现了一些工具，它们不属于主LLVM SVN仓库，并且是单独发布的。
 
 
 
