@@ -1,9 +1,3 @@
-
-
-
-
-
-
 第1章 编译和安装LLVM
 #############
 
@@ -11,7 +5,8 @@ LLVM基础设施适用于若干 **Unix** 系统（GNU/**Linux**，**FreeBSD** �
 
 LLVM的新手使用者必须明白，基本的LLVM编译器包括LLVM和Clang的库和工具。因此，本章的目的在于说明如何编译（build）并安装（install）它们。本书自始自终都将聚焦LLVM版本3.4。然而，LLVM是一个年轻的项目，处于活跃的开发期，因此它在不断地改变；知道这一点是重要的。
 
-.. NOTE::
+.. tip::
+
    写作本书的时候，LLVM 3.5还没有发布。尽管这本书讲解LLVM 3.4，但是我们计划在2014年9月的第三个星期发布一个附录，将本书中的例子更新到LLVM 3.5，让你能够以LLVM最新的版本练习本书的内容。这个附录将可以从 `https://www.packtpub.com/sites/default/files/downloads/6924OS_Appendix.pdf <https://www.packtpub.com/sites/default/files/downloads/6924OS_Appendix.pdf>`_ 得到。
 
 本章将讨论以下内容：
@@ -53,7 +48,7 @@ ARMv7/ARMv7a Linux-generic
 ============ ===================================================================================================
 
 
-要想查看针对不同版本的所有选项，请访问http://www.llvm.org/releases/download.html，查看Pre-built Binaries小节有关你想下载的版本。例如，为了在Ubuntu 13.10上下载LLVM并作系统范围的安装，我们从站点得到文件的URL，并使用下面的命令：
+要想查看针对不同版本的所有选项，请访问 http://www.llvm.org/releases/download.html ，查看 **Pre-built Binaries** 小节有关你想下载的版本。例如，为了在Ubuntu 13.10上下载LLVM并作系统范围的安装，我们从站点得到文件的URL，并使用下面的命令：
 
 .. code-block:: bash
 
@@ -71,7 +66,9 @@ ARMv7/ARMv7a Linux-generic
 
 如果你在运行Clang的时候遇到问题，试着从安装Clang的文件夹直接运行二进制文件，以确定你的问题不是错误配置PATH环境变量的问题。如果它还是不能工作，你可能下载了一个不兼容系统的预编译二进制文件。记住，当被编译的时候，二进制文件链接特定版本的动态库。在运行应用程序的时候发生链接的错误，是一个清楚的征兆说明你在使用一个不兼容你的系统的二进制文件。
 
-在Linux上，举例来说，报告链接错误的时候，它会打印出二进制文件的名字，无法加载的动态库的名字，以及错误消息。注意在屏幕上打印出来的动态库的名字。这是一个清楚的信号，说明系统的动态链接器和加载器无法加载这个库，因为这个程序不是为兼容系统准备的。
+.. tip::
+
+    在Linux上，举例来说，报告链接错误的时候，它会打印出二进制文件的名字，无法加载的动态库的名字，以及错误消息。注意在屏幕上打印出来的动态库的名字。这是一个清楚的信号，说明系统的动态链接器和加载器无法加载这个库，因为这个程序不是为兼容系统准备的。
 
 要在其它系统上安装预编译的包，可以遵循相同的步骤，除了Windows。Windows的预编译包是一个易用的安装器，它将LLVM树结构解开到你的Program Files文件夹的一个子文件夹。这个安装器还有一个选项以自动地更新你的PATH环境变量，让你能够在任意的命令提示窗口使用Clang可执行文件。
 
@@ -114,137 +111,182 @@ Windows
 
 Windows特定的LLVM/Clang快照安装器可以从http://llvm.org/builds的Windows snapshot builds小节下载得到。最终的LLVM/Clang工具默认被安装在C:\Program Files\LLVM\bin（这个位置可能会变，取决于发布）。注意，有一个单独的模仿Visual C++ cl.exe的Clang驱动器，名为clang-cl.exe。如果你打算使用经典的GCC兼容的驱动器，就用clang.exe。
 
-注意，快照发布是不稳定，可能是高度实验性的。
+.. tip::
+
+    注意，快照发布是不稳定，可能是高度实验性的。
 
 从源代码编译
 ******
 
 没有预编译二进制文件时，LLVM和Clang可以从头编译，首先获取源代码。从源代码编译项目是理解LLVM详细结构的好方法。此外，你将能够微调配置参数以获得一个定制的编译器。
+
 系统要求
-最新的LLVM支持的平台的列表可以在http://llvm.org/docs/GettingStarted.html#hardware找到。另外，http://llvm.org/docs/GettingStarted.html#software描述了详细的且最新的编译LLVM所需的软件集合。在Ubuntu系统上，举例来说，软件依赖关系可以用下面的命令解决：
-$ sudo apt-get install build-essential zlib1g-dev python
+====
+
+最新的LLVM支持的平台的列表可以在 http://llvm.org/docs/GettingStarted.html#hardware 找到。另外， http://llvm.org/docs/GettingStarted.html#software 描述了详细的且最新的编译LLVM所需的软件集合。在Ubuntu系统上，举例来说，软件依赖关系可以用下面的命令解决：
+
+.. code-block:: bash
+
+    $ sudo apt-get install build-essential zlib1g-dev python
 
 如果你在用一个旧版的Linux发布，其软件包已过时，就花点功夫更新一下系统。LLVM源代码对编译它们的C++编译器要求很严，使用旧版的C++编译器很可能会导致编译失败。
+
 获取源代码
+=====
+
 LLVM源代码的发布遵循一个BSD风格的许可证，可以从官方网站或者SVN仓库下载。要下载3.4版本的源代码，要么去网站，http://llvm.org/releases/download.html#3.4，要么依照以下方法直接下载并为编译准备好源代码。注意你总是会需要Clang和LLVM，但是clang-tools-extra是可选的。然而，如果你打算练习第10章（Clang工具和LibTooling）的教程，你会用到它的。参考下一章了解如何编译其它项目。用下面的命令以下载和安装LLVM、Clang、和附加工具：
-$ wget http://llvm.org/releases/3.4/llvm-3.4.src.tar.gz
-$ wget http://llvm.org/releases/3.4/clang-3.4.src.tar.gz
-$ wget http://llvm.org/releases/3.4/clang-tools-extra-3.4.src.tar.gz
-$ tar xzf llvm-3.4.src.tar.gz; tar xzf clang-3.4.src.tar.gz
-$ tar xzf clang-tools-extra-3.4.src.tar.gz
-$ mv llvm-3.4 llvm
-$ mv clang-3.4 llvm/tools/clang
-$ mv clang-tools-extra-3.4 llvm/tools/clang/tools/extra
+
+.. code-block:: bash
+
+    $ wget http://llvm.org/releases/3.4/llvm-3.4.src.tar.gz
+    $ wget http://llvm.org/releases/3.4/clang-3.4.src.tar.gz
+    $ wget http://llvm.org/releases/3.4/clang-tools-extra-3.4.src.tar.gz
+    $ tar xzf llvm-3.4.src.tar.gz; tar xzf clang-3.4.src.tar.gz
+    $ tar xzf clang-tools-extra-3.4.src.tar.gz
+    $ mv llvm-3.4 llvm
+    $ mv clang-3.4 llvm/tools/clang
+    $ mv clang-tools-extra-3.4 llvm/tools/clang/tools/extra
 
 在Windows下载的源代码可以用gnuzip、WinZip、或者其它可用的解压缩工具解包。
 
 SVN
+---
+
 要想直接从SVN仓库获取源代码，首先请确认你的系统上安装了subversion软件包。下一步是决定你是想要仓库中的最新的版本，还是一个稳定的版本。如果想要最新的版本（主干），你可以用下面的命令序列，假设你的当前文件夹就是你想存放源代码的地方：
-$ svn co http://llvm.org/svn/llvm-project/llvm/trunk llvm
-$ cd llvm/tools
-$ svn co http://llvm.org/svn/llvm-project/cfe/trunk clang
-$ cd ../projects
-$ svn co http://llvm.org/svn/llvm-project/compiler-rt/trunk compiler-rt
-$ cd ../tools/clang/tools
-$ svn co http://llvm.org/svn/llvm-project/clang-tools-extra/trunk extra
 
-　　如果你想获取一个稳定的版本（例如，版本3.4），用tags/RELEASE_34/final代替所用命令中的trunk。你可能还关心浏览LLVM SVN仓库的简易方法，以查看提交历史、日志、和源代码树结构。对此，你可以访问http://llvm.org/viewvc。
+.. code-block:: bash
+
+    $ svn co http://llvm.org/svn/llvm-project/llvm/trunk llvm
+    $ cd llvm/tools
+    $ svn co http://llvm.org/svn/llvm-project/cfe/trunk clang
+    $ cd ../projects
+    $ svn co http://llvm.org/svn/llvm-project/compiler-rt/trunk compiler-rt
+    $ cd ../tools/clang/tools
+    $ svn co http://llvm.org/svn/llvm-project/clang-tools-extra/trunk extra
+
+如果你想获取一个稳定的版本（例如，版本3.4），用tags/RELEASE_34/final代替所用命令中的trunk。你可能还关心浏览LLVM SVN仓库的简易方法，以查看提交历史、日志、和源代码树结构。对此，你可以访问 http://llvm.org/viewvc 。
+
 Git
-　　你也可以从和SVN保持同步的Git镜像仓库获取源代码：
-$ git clone http://llvm.org/git/llvm.git
-$ cd llvm/tools
-$ git clone http://llvm.org/git/clang.git
-$ cd ../projects
-$ git clone http://llvm.org/git/compiler-rt.git
-$ cd ../tools/clang/tools
-$ git clone http://llvm.org/git/clang-tools-extra.git
+---
+
+你也可以从和SVN保持同步的Git镜像仓库获取源代码：
+
+.. code-block:: bash
+
+    $ git clone http://llvm.org/git/llvm.git
+    $ cd llvm/tools
+    $ git clone http://llvm.org/git/clang.git
+    $ cd ../projects
+    $ git clone http://llvm.org/git/compiler-rt.git
+    $ cd ../tools/clang/tools
+    $ git clone http://llvm.org/git/clang-tools-extra.git
+
 编译和安装LLVM
-　　这里会解释编译和安装LLVM的多种方法。
+=========
+
+这里会解释编译和安装LLVM的多种方法。
+
 利用自动工具生成的配置脚本
-　　编译LLVM的标准方法，是通过配置脚本生成平台特定的Makefile，这些脚本是由GNU的自动工具创建的。此编译系统是相当流行的，你大概知道它。它支持若干不同的配置选项。
+-------------
 
-只有当你想要修改LLVM编译系统的时候，你才需要在你的机器上安装GNU自动工具，在这种情况下，你将生成新的配置脚本。通常，这是不必要的。
+编译LLVM的标准方法，是通过配置脚本生成平台特定的Makefile，这些脚本是由GNU的自动工具创建的。此编译系统是相当流行的，你大概知道它。它支持若干不同的配置选项。
 
-　　花一点时间，用下面的命令看一下可能的选项：
-$ cd llvm
-$ ./configure --help
+.. note::
 
-　　其中一些选项需要简单的解释：
-* --enable-optimized：这个选项让我们能够编译得到不支持调试且开启优化的LLVM/Clang。默认，这个选项是关闭的。调试支持，还有关闭优化，是被推荐的，如果你用LLVM库作开发，但是对于实际应用，就应该舍弃之，因为关闭优化会导致LLVM极大地降速。
-* --enable-assertions：这个选项开启代码中的断言。在开发LLVM核心库的时候，这个选项非常有用。默认，它是开启的。
-* --enable-shared：这个选项让我们能够将LLVM/Clang库编译为共享库，并用之链接LLVM工具。如果你计划在LLVM编译系统之外开发一个工具，并且希望动态地链接LLVM库，就应该开启它。默认，这个选项是关闭的。
-* --enable-jit：这个选项为所有支持即时编译（Just-In-Time Compilation）的目标开启即时编译。默认，它是开启的。
-* --prefix：这是安装目录的路径，最终的LLVM/Clang工具和库会被安装到这里；例如，--prefix=/usr/local/llvm，这样二进制文件会安装到/usr/local/llvm/bin，库文件会安装到/usr/local/llvm/lib。
-* --enable-targets：这个选项让我们能够选择一组目标，编译器必须能够为这些目标生成代码。值得提及的是，LLVM能够作交叉编译，也就是说，编译得到的程序将在其它平台上运行，例如ARM、MIPS等。这个选项指定代码生成库需要包含哪些后端。默认，所有的目标都会被编译，但是通过仅仅指定你所关心的目标，你可以节省编译时间。
+    只有当你想要修改LLVM编译系统的时候，你才需要在你的机器上安装GNU自动工具，在这种情况下，你将生成新的配置脚本。通常，这是不必要的。
 
-这个选项不足于生成独立的交叉编译器。参考第8章（交叉平台编译）了解生成交叉编译器的必要的步骤。
-　　
-　　以期望的参数运行配置命令之后，你需要用经典的make和make install二重奏完成编译。我们接下来会给你一个例子。
+花一点时间，用下面的命令看一下可能的选项：
+
+.. code-block:: bash
+
+    $ cd llvm
+    $ ./configure --help
+
+其中一些选项需要简单的解释：
+
+* ``--enable-optimized`` ：这个选项让我们能够编译得到不支持调试且开启优化的LLVM/Clang。默认，这个选项是关闭的。调试支持，还有关闭优化，是被推荐的，如果你用LLVM库作开发，但是对于实际应用，就应该舍弃之，因为关闭优化会导致LLVM极大地降速。
+* ``--enable-assertions`` ：这个选项开启代码中的断言。在开发LLVM核心库的时候，这个选项非常有用。默认，它是开启的。
+* ``--enable-shared`` ：这个选项让我们能够将LLVM/Clang库编译为共享库，并用之链接LLVM工具。如果你计划在LLVM编译系统之外开发一个工具，并且希望动态地链接LLVM库，就应该开启它。默认，这个选项是关闭的。
+* ``--enable-jit`` ：这个选项为所有支持即时编译（Just-In-Time Compilation）的目标开启即时编译。默认，它是开启的。
+* ``--prefix`` ：这是安装目录的路径，最终的LLVM/Clang工具和库会被安装到这里；例如，--prefix=/usr/local/llvm，这样二进制文件会安装到/usr/local/llvm/bin，库文件会安装到/usr/local/llvm/lib。
+* ``--enable-targets`` ：这个选项让我们能够选择一组目标，编译器必须能够为这些目标生成代码。值得提及的是，LLVM能够作交叉编译，也就是说，编译得到的程序将在其它平台上运行，例如ARM、MIPS等。这个选项指定代码生成库需要包含哪些后端。默认，所有的目标都会被编译，但是通过仅仅指定你所关心的目标，你可以节省编译时间。
+
+
+.. note::
+
+    这个选项不足于生成独立的交叉编译器。参考第8章（交叉平台编译）了解生成交叉编译器的必要的步骤。
+
+以期望的参数运行配置命令之后，你需要用经典的make和make install二重奏完成编译。我们接下来会给你一个例子。
 
 以Unix编译和配置
-　　在这个例子中，我们会用一组命令序列编译得到一个不优化（支持调试）的LLVM/Clang，这些命令适用于任意基于Unix的系统或者Cygwin。我们会编译它，将它安装在我们的home目录，而不是如前面的例子所示的那样，将它安装在/usr/local/llvm，以说明如何在无根权限的情况下安装LLVM。这是作为一个开发者所习以为常的。这样，你还可以安装并维护多个版本。如果你想要，你可以修改安装文件夹为/usr/local/llvm，作系统范围的安装。只不过记得在创建安装目录并运行make install的时候，使用sudo命令。所用的命令序列如下：
-$ mkdir where-you-want-to-install
-$ mkdir where-you-want-to-build
-$ cd where-you-want-to-build
+^^^^^^^^^^
 
-　　在这一节，我们会创建一个单独的目录来存放目标文件，即编译中间副产品。不要在存放源代码的相同的文件夹中编译。使用下面的命令，其中的参数在前面小节解释过了：
+在这个例子中，我们会用一组命令序列编译得到一个不优化（支持调试）的LLVM/Clang，这些命令适用于任意基于Unix的系统或者Cygwin。我们会编译它，将它安装在我们的home目录，而不是如前面的例子所示的那样，将它安装在/usr/local/llvm，以说明如何在无根权限的情况下安装LLVM。这是作为一个开发者所习以为常的。这样，你还可以安装并维护多个版本。如果你想要，你可以修改安装文件夹为/usr/local/llvm，作系统范围的安装。只不过记得在创建安装目录并运行make install的时候，使用sudo命令。所用的命令序列如下：
+
+.. code-block:: bash
+
+    $ mkdir where-you-want-to-install
+    $ mkdir where-you-want-to-build
+    $ cd where-you-want-to-build
+
+在这一节，我们会创建一个单独的目录来存放目标文件，即编译中间副产品。不要在存放源代码的相同的文件夹中编译。使用下面的命令，其中的参数在前面小节解释过了：
 $ /PATH_TO_SOURCE/configure --disable-optimized --prefix=../where-youwant-
 to-install
 $ make && make install
 
 可选地，你可以用make -jN命令来启动最多N个编译器实例并行地工作，以加速编译过程。例如，你可以试验make -j4（或者更大一点的数字），如果你的处理器是四核的。
 
-　　编译并安装所有组件需要一点时间。注意，编译脚本也会处理你所下载的存放在LLVM源代码树中的其它仓库目录。不需要单独地配置Clang或Clang附加工具。
-　　为了检查编译是否成功，使用shell命令echo $?总是可行的。shell变量$?返回你在shell会话中运行的最后一个进程的退出码，而echo将它打印在屏幕上。因此，重要的是在你的make命令之后立即运行这个命令。如果编译成功了，make命令总是返回0，如其它成功完成执行的程序一样：
+编译并安装所有组件需要一点时间。注意，编译脚本也会处理你所下载的存放在LLVM源代码树中的其它仓库目录。不需要单独地配置Clang或Clang附加工具。
+为了检查编译是否成功，使用shell命令echo $?总是可行的。shell变量$?返回你在shell会话中运行的最后一个进程的退出码，而echo将它打印在屏幕上。因此，重要的是在你的make命令之后立即运行这个命令。如果编译成功了，make命令总是返回0，如其它成功完成执行的程序一样：
 $ echo $?
 0
 
-　　配置你的shell的PATH环境变量，使得能够轻松地访问刚刚安装的二进制文件，然后通过查询Clang版本来完成第一次测试：
+配置你的shell的PATH环境变量，使得能够轻松地访问刚刚安装的二进制文件，然后通过查询Clang版本来完成第一次测试：
 $ export PATH="$PATH:where-you-want-to-install/bin"
 $ clang –v
 clang version 3.4
 利用CMake和Ninja
-　　LLVM给出了另一种交叉平台编译系统，代替传统的配置脚本，它是基于CMake的。CMake可以为你的平台生成专用的Makefile，其生成方法和配置脚本一样，但是CMake更加灵活，还可以为其它系统生成编译文件，例如Ninja，Xcode，和Visual Studio。
-　　另一方面，Ninja是一种小巧且快速的编译系统，代替GNU Make和它关联的Makefile。如果你对Ninja背后的动机和故事感到好奇，就去访问http://aosabook.org/en/posa/ninja.html。CMake可以被配置为生成Ninja编译文件，而不是Makefile，让你可以选择使用CMake和GNU Make，或者CMake和Ninja。
-　　然而，利用后者，可以让你享受非常快的来回的时光，当你修改LLVM源代码并重编译它的时候。这种场景会尤其有用，如果你想要在LLVM源代码树内部开发一个工具或者插件，并且依靠LLVM编译系统来编译你的项目。
-　　确定你已经安装CMake和Ninja。例如，在Ubuntu系统上，运行下面的命令：
+LLVM给出了另一种交叉平台编译系统，代替传统的配置脚本，它是基于CMake的。CMake可以为你的平台生成专用的Makefile，其生成方法和配置脚本一样，但是CMake更加灵活，还可以为其它系统生成编译文件，例如Ninja，Xcode，和Visual Studio。
+另一方面，Ninja是一种小巧且快速的编译系统，代替GNU Make和它关联的Makefile。如果你对Ninja背后的动机和故事感到好奇，就去访问http://aosabook.org/en/posa/ninja.html。CMake可以被配置为生成Ninja编译文件，而不是Makefile，让你可以选择使用CMake和GNU Make，或者CMake和Ninja。
+然而，利用后者，可以让你享受非常快的来回的时光，当你修改LLVM源代码并重编译它的时候。这种场景会尤其有用，如果你想要在LLVM源代码树内部开发一个工具或者插件，并且依靠LLVM编译系统来编译你的项目。
+确定你已经安装CMake和Ninja。例如，在Ubuntu系统上，运行下面的命令：
 $ sudo apt-get install cmake ninja-build
 
-　　LLVM和CMake还提供了若干编译定制选项。完整的选项列表可以从http://llvm.org/docs/CMake.html得到。下面给出了一个选项列表，它和我们之前介绍的基于自动工具的编译系统的选项集相对应。这些选项的默认值和相应的配置脚本选项的默认值一样：
+LLVM和CMake还提供了若干编译定制选项。完整的选项列表可以从http://llvm.org/docs/CMake.html得到。下面给出了一个选项列表，它和我们之前介绍的基于自动工具的编译系统的选项集相对应。这些选项的默认值和相应的配置脚本选项的默认值一样：
 * CMAKE_BUILD_TYPE：这是一个字符串值，指定编译类型是Release还是Debug。Release编译等价于配置脚本中的--enable-optimized选项，而Debug编译等价于--disable-optimized选项。
 * CMAKE_ENABLE_ASSERTIONS：这是一个布尔值，对应—enable-assertions配置选项。
 * BUILD_SHARED_LIBS：这是一个布尔值，对应--enable-shared配置选项，指定这些库是共享的还是静态的。Windows平台不支持共享库。
 * CMAKE_INSTALL_PREFIX：这是一个字符串值，对应--prefix配置脚本，指定安装路径。
 * LLVM_TARGETS_TO_BUILD：这是一个以分号分隔的要编译的目标的列表，大致对应--enable-targets配置选项中以逗号分隔的目标的列表。
-　　
-　　要想设置这些成对的参数-数值中的任意一个，就将-DPARAMETER=value参数传送给cmake命令。
+
+要想设置这些成对的参数-数值中的任意一个，就将-DPARAMETER=value参数传送给cmake命令。
 
 在Unix上利用CMake和Ninja编译
-　　我们将重新产生之前为配置脚本给出的相同的例子，但是这次，我们将用CMake和Ninja编译它：
-　　首先，创建一个文件夹以存放编译和安装文件：
+我们将重新产生之前为配置脚本给出的相同的例子，但是这次，我们将用CMake和Ninja编译它：
+首先，创建一个文件夹以存放编译和安装文件：
 $ mkdir where-you-want-to-build
 $ mkdir where-you-want-to-install
 $ cd where-you-want-to-build
 
-　　记住，你需要用一个和存放LLVM源代码的文件夹不同的文件夹。接下来，是时候以你选择的选项集合启动CMake了：
+记住，你需要用一个和存放LLVM源代码的文件夹不同的文件夹。接下来，是时候以你选择的选项集合启动CMake了：
 $ cmake /PATHTOSOURCE -G Ninja -DCMAKE_BUILD_TYPE="Debug" -DCMAKE_INSTALL_PREFIX="../where-you-want-to-install"
 
-　　你应该用你的LLVM源代码文件夹的绝对位置代替/PATHTOSOURCE。你可以省去参数-G Ninja，如果你想使用传统的GNU Makefile。现在，根据你的选择，执行ninja或者make，以完成编译。对于ninja来说，用下面的命令：
+你应该用你的LLVM源代码文件夹的绝对位置代替/PATHTOSOURCE。你可以省去参数-G Ninja，如果你想使用传统的GNU Makefile。现在，根据你的选择，执行ninja或者make，以完成编译。对于ninja来说，用下面的命令：
 $ ninja && ninja install
 
-　　对于make来说，使用下面的命令：
+对于make来说，使用下面的命令：
 $ make && make install
 
-　　如之前我们在上一个例子中所做的那样，我们可以输入一个简单的命令来检查编译成功与否。记住，在最后的编译命令之后立即使用它，中间不能运行其它命令，因为它返回的是当前shell会话中你运行的最后的程序的退出码：
+如之前我们在上一个例子中所做的那样，我们可以输入一个简单的命令来检查编译成功与否。记住，在最后的编译命令之后立即使用它，中间不能运行其它命令，因为它返回的是当前shell会话中你运行的最后的程序的退出码：
 $ echo $?
 0
 
-　　如果前面的命令返回0，就说明编译成功了。最后，配置你的PATH环境变量，使用你的新的编译器：
+如果前面的命令返回0，就说明编译成功了。最后，配置你的PATH环境变量，使用你的新的编译器：
 $ export PATH=$PATH:where-you-want-to-instll/bin
 $ clang -v
 
 解决编译错误
-　　如果编译命令返回一个非零值，就意味着发生了错误。在这种情况下，Make或者Ninja会打印这个错误让你查看它。务必集中分析出现的第一个错误。在一个LLVM的稳定发布版本中，编译错误典型地发生在你的系统未达到所需的软件版本的标准的时候。最常见的问题源于使用了一个过时的编译器。例如，使用GNU g++ 版本4.4.3编译LLVM 3.4会导致下面的编译错误，在成功地编译了过半的LLVM源代码之后：
+如果编译命令返回一个非零值，就意味着发生了错误。在这种情况下，Make或者Ninja会打印这个错误让你查看它。务必集中分析出现的第一个错误。在一个LLVM的稳定发布版本中，编译错误典型地发生在你的系统未达到所需的软件版本的标准的时候。最常见的问题源于使用了一个过时的编译器。例如，使用GNU g++ 版本4.4.3编译LLVM 3.4会导致下面的编译错误，在成功地编译了过半的LLVM源代码之后：
 [1385/2218] Building CXX object projects/compiler-rt/lib/interception/
 CMakeFiles/RTInterception.i386.dir/interception_type_test.cc.o
 FAILED: /usr/bin/c++ (...)_test.cc.o -c /local/llvm-3.3/llvm/projects/
@@ -255,10 +297,10 @@ OFF64_T
 sanitizer_internal_defs.h:80: error: typedef __
 sanitizer::u64 __sanitizer::OFF64_T
 
-　　为了解决这个错误，你要改动LLVM源代码以规避这个问题（如果你上网搜索或者亲自去查看源代码，你会找到解决它的方法），但是你不想修正你想要编译的每一个LLVM版本。更新你的编译器简单多了，肯定也是最适当的解决方案。
-　　一般来说，当你在一个稳定版本中遇到编译错误时，就专心地去寻找你的系统和推荐的设置之间的差异。记住，稳定的版本已经在若干平台上测试过了。另一方面，如果你尝试着编译一个不稳定的SVN发布版本，那么一个近期的提交破坏了在你的系统上的编译是可能的，而回退到一个可用的SVN发布版本也是容易的。
+为了解决这个错误，你要改动LLVM源代码以规避这个问题（如果你上网搜索或者亲自去查看源代码，你会找到解决它的方法），但是你不想修正你想要编译的每一个LLVM版本。更新你的编译器简单多了，肯定也是最适当的解决方案。
+一般来说，当你在一个稳定版本中遇到编译错误时，就专心地去寻找你的系统和推荐的设置之间的差异。记住，稳定的版本已经在若干平台上测试过了。另一方面，如果你尝试着编译一个不稳定的SVN发布版本，那么一个近期的提交破坏了在你的系统上的编译是可能的，而回退到一个可用的SVN发布版本也是容易的。
 利用其它的Unix方法
-　　一些Unix系统提供了包管理器，它们自动从源代码编译并安装应用程序。它们提供了对等的源代码编译功能，此功能预先在你的系统上测试过，也会尝试解决包依赖问题。现在我们将在编译并安装LLVM和Clang的上下文中评估这样的平台：
+一些Unix系统提供了包管理器，它们自动从源代码编译并安装应用程序。它们提供了对等的源代码编译功能，此功能预先在你的系统上测试过，也会尝试解决包依赖问题。现在我们将在编译并安装LLVM和Clang的上下文中评估这样的平台：
 * 对于使用MacParts的Mac OS X，我们可以使用下面的命令：
 $ port install llvm-3.4 clang-3.4
 * 对于使用Homebrew的Mac OS X，我们可以使用下面的命令：
