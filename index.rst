@@ -3,12 +3,25 @@
    You can adapt this file completely to your liking, but it should at least
    contain the root `toctree` directive.
 
-Welcome to Getting Started with LLVM Core Libraries's documentation!
-====================================================================
+.. Welcome to Getting Started with LLVM Core Libraries's documentation!
+.. ====================================================================
+
+Getting Started with LLVM Core Libraries（中文版）
+=============================================
+
+Bruno Cardoso Lopes, Rafael Auler 著
+
+潘立丰 译
+
 
 .. toctree::
-   :maxdepth: 2
-   :caption: Contents:
+   :maxdepth: 3
+
+   ch01
+   ch02
+   ch03
+   ch04
+   ch05
 
 
 

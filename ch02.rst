@@ -1,0 +1,233 @@
+第2章 外部项目
+########
+
+　　核心LLVM和Clang代码库之外的项目是外部项目，需要单独下载。在本章中，我们介绍多种官方LLVM的外部项目，解释如何编译安装它们。只关注核心LLVM工具的读者可以跳过本章，想阅读时再回来。
+　　在本章中，我们将介绍以下项目，以及如何安装它们：
+* Clang extra tools
+* Compiler-RT
+* DragonEgg
+* LLVM test suite
+* LLDB
+* Libc++
+　　除此之外，还有两个本书未包括的官方LLVM项目：Polly（多面优化器），lld（LLVM链接器）。当前lld正在开发之中。
+　　预编译的安装包不包含任何本章将讨论的外部项目，除了Compiler-RT。因此，不同于前一章，我们将只介绍如何下载并编译它们。
+　　不要期望这些项目的成熟度能够比肩核心LLVM/Clang项目。其中一些还处于试验期或者婴儿期。
+介绍Clang extras
+　　LLVM最显著的设计决策是分离前端和后端，分别为单独的LLVM核心库和Clang。LLVM起步于一套以LLVM中间表示（IR）为基础的工具，依赖于一个定制的GCC，用GCC将高级语言翻译为它的特殊IR，存储为bitcode（位码）文件。Bitcode是效仿Java bytecode文件而新造的一个术语。Clang作为由LLVM团队特别设计的第一前端，当它如核心LLVM一般具备高水准的品质、清晰的文档、库组织方式时，它成为LLVM项目的一个重要里程碑。Clang不仅将C和C++转换为LLVM IR，而且能够监督整个编译过程，作为一个灵活的编译器驱动器，努力与GCC兼容共处。
+　　自此以后，我们将Clang看作一个前端编译器，而不是一个编译器驱动器，它负责将C和C++程序翻译为LLVM IR。利用Clang可以写出强大的工具，让C++程序员能够自由地探索C++热点技术，例如C++代码重构工具和源代码分析工具。这是Clang程序库激动人心的一面。Clang自带的一些工具或许能让你见识其程序库的用途：
+* Clang Check：它能够作语法检查，实施快速修正以解决常见的问题，还能够输出任意程序的内部Clang抽象语法树（AST，Abstract Syntax Tree）
+* Clang Format：它是一个工具，也是一个库，LibFormat，它既能整理代码缩进，也能格式化任意的C++代码，使之符合LLVM编码标准、Google的风格规范、Chromium的风格规范、Mozilla的风格规范、和WebKit的风格规范
+　　代码仓库clang-tools-extra收集了更多建立在Clang之上的应用程序。它们能够读入大型C或C++代码库并执行各种代码重构或分析。下面列举其中一些工具，但不仅限于此：
+* Clang Modernizer：这是一个代码重构工具，它扫描C++代码并将旧风格的结构转换为符合更现代的风格，这些新风格是由新的标准提议的，例如C++-11标准
+* Clang Tidy：这是一个剥绒机工具，它检查常见的编程错误，这些错误违背了LLVM或者Google的编码标准。
+* Modularize：它帮你找出适合组成一个模块（module）的C++头文件，模块是C++标准委员会目前正在讨论的一个新概念（请参考第10章，Clang工具和LibTooling，以了解更多信息）
+* PPTrace：这是一个跟踪Clang C++预处理器的活动的简单工具
+　　至于如何运用这些工具，以及如何编译我们自己的工具，第10章，Clang工具和LibTooling，将详细地介绍它们。
+编译和安装Clang附加（extra）工具
+　　你可以获取这个项目的官方源代码，例如3.4版本：http://releases.llvm.org/3.4/clang-tools-extra-3.4.src.tar.gz。另外，你也可以查看所有可获取的版本：http://releases.llvm.org/。凭借LLVM编译系统，将这套工具和核心LLVM、Clang源代码一起编译，编译轻而易举。这要求按如下方式将其源代码目录放在Clang源代码树中：
+$ wget http://releases.llvm.org/3.4/clang-tools-extra-3.4.src.tar.gz
+$ tar xzf clang-tools-extra-3.4.src.tar.gz
+$ mv clang-tools-extra-3.4 llvm/tools/clang/tools/extra
+　　你也可以直接从LLVM官方subversion仓库获取源代码：
+$ cd llvm/tools/clang/tools
+$ svn co http://llvm.org/svn/llvm-project/clang-tools-extra/trunk extra
+　　如前一章说过的那样，如果你想获取稳定的3.4版源代码，就用tags/RELEASE_34/final替换trunk。另外，如果你喜欢使用GIT版本控制软件，你可以用下面的命令下载：
+$ cd llvm/tools/clang/tools
+$ git clone http://llvm.org/git/clang-tools-extra.git extra
+　　把源代码放在Clang树中之后，你必须用Cmake或者自动工具生成的configure脚本去编译它，参考第1章，编译和安装LLVM。按如下方式运行clang-modernize工具，可测试是否安装成功：
+$ clang-modernize --version
+clang-modernizer version 3.4
+理解Compiler-RT
+　　Compiler-RT（runtime）项目为硬件不支持的低级功能提供目标特定的支持。举例来说，32位目标通常缺少64位除法指令。Compiler-RT提供一个目标特定的优化的函数，它用32位指令实现64位除法，从而解决这个问题。它是libgcc的LLVM等价物，提供相同的功能。而且，它运行时支持地址和内存清洁（sanitizer）工具。你可以下载Compiler-RT 3.4版源代码：http://releases.llvm.org/3.4/compiler-rt-3.4.src.tar.gz，或者查看更多的版本：http://releases.llvm.org/。
+　　Compiler-RT是基于LLVM的编译器工具链中的重要组件，我们在前一章已经介绍了如何安装它。如果你还不清楚，记住把它的源代码放在LLVM源代码树中的projects文件夹中，如以下命令所示：
+$ wget http://releases.llvm.org/3.4/compiler-rt-3.4.src.tar.gz
+$ tar xzf compiler-rt-3.4.src.tar.gz
+$ mv compiler-rt-3.4 llvm/projects/compiler-rt
+　　或者，你可以从它的SVN仓库下载：
+$ cd llvm/projects
+$ svn checkout http://llvm.org/svn/llvm-project/compiler-rt/trunk compiler-rt
+　　也可以从一个GIT镜像下载：
+$ cd llvm/projects
+$ git clone http://llvm.org/git/compiler-rt.git
+
+此外，Compiler-RT还能在GNU/Linux、Darwin、FreeBSD和NetBSD系统上工作。已支持的架构包括：i386，x86_64，PowerPC，SPARC64，ARM。
+试验Compiler-RT
+　　为了看到Compiler-RT程序库运作的典型情境，你可以做一个简单的实验。写一个执行64位除法的C程序：
+#include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+
+int main() {
+    uint64_t a = 0ULL, b = 0ULL;
+    scanf("%lld %lld", &a, &b);
+    printf("64-bit division is %lld\n", a / b);
+    return EXIT_SUCCESS;
+}
+
+下载示例代码
+你可以从http://www.packtpub.com用你的帐号下载示例代码文件，为所有你已经购买的Packt书籍。如果你在别处购买了这本书，你就访问http://www.packtpub.com/support并注册，这样代码文件就可以通过邮件直接发送给你。
+　　
+　　如果你有64位x86系统，用你的LLVM编译器执行如下两个命令：
+$ clang -S -m32 test.c -o test-32bit.S
+$ clang -S test.c -o test-64bit.S
+　　参数-S指示编译器生成x86汇编语言，-m32指示编译器生成32位x86程序。这里，为这个程序生成汇编语言文件test-32bit.S。当你打开这个文件时，你会看到，在程序执行除法的地方有一个古怪的调用（call）：
+calll	__udivdi3
+　　这个函数由Compiler-RT定义，展示了怎么使用该程序库。然而，假如省去-m32参数，使用64位x86编译器，如第2个编译命令，生成test-64bit.S汇编语言文件，你将看不到上述调用，因为这个程序不需要Compiler-RT协助，它简单地用一条指令执行除法：
+divq	-24(%rbp)
+使用DragonEgg插件
+　　之前解释过，起初LLVM是一个依赖于GCC的项目，当时它还没有自己的C/C++前端编译器。在那种情况下使用LLVM，你需要下载一份经过修改的GCC源代码，称为llvm-gcc，并且整体编译它。因为要编译完整的GCC程序包，所以编译过程十分漫长，并且有点复杂，靠自己重新编译它需要用到完整的GCC相关门类的知识。DragonEgg项目的出现为此提供了一个简明的方案，它利用GCC插件系统将LLVM逻辑分离到它自己的相对较小的代码树中。以这种方式，使用者不再需要重新编译整个GCC程序包，仅仅编译一个插件，然后将它加载到GCC中。DragonEgg也是LLVM项目伞中唯一一个以GPL许可的项目。
+　　Clang出现之后，DragonEgg依然存留直到今天，因为Clang只处理C和C++语言，而GCC能够解析多种多样的语言。通过DragonEgg插件，你能够将GCC用作LLVM编译器的前端，能够编译大多数GCC支持的语言：Ada、C、C++和FORTRAN，部分支持Go、Java、Obj-C和Obj-C++。
+　　这个插件将GCC的中后端替换成LLVM的中后端，自动执行所有的编译步骤，如你对第一流编译器驱动器期望的那样。下图描绘了这种新的编译流水线情景：
+
+　　根据你的愿望，你可以用参数-fplugin-arg-dragonegg-emit-ir -S让编译流水线在生成LLVM IR阶段停止，而后用LLVM工具分析和调查前端的结果，或者自己用LLVM工具完成编译。待会我们将举一个例子。
+　　作为一个LLVM附属项目，DragonEgg不放在和LLVM主项目相同的地方。写作本文之时，最新的DragonEgg稳定版是3.3，依赖LLVM 3.3工具集。因此，对于生成的LLVM bitcode，即存储在磁盘上的LLVM IR程序文件，你只能使用3.3版LLVM工具分析它，优化它，或者继续编译它。DragonEgg的官方网站是http://dragonegg.llvm.org
+编译DragonEgg
+　　为了编译和安装DragonEgg，首先从这个链接获取源代码：http://releases.llvm.org/3.3/dragonegg-3.3.src.tar.gz。对于Ubuntu系统，用以下命令：
+$ wget http://releases.llvm.org/3.3/dragonegg-3.3.src.tar.gz
+$ tar xzvf dragonegg-3.3.src.tar.gz
+$ cd dragonegg-3.3.src
+　　如果你想探索SVN上最新的但不稳定的源代码，用以下命令：
+$ svn checkout http://llvm.org/svn/llvm-project/dragonegg/trunk dragonegg
+　　对于GIT镜像，用以下命令：
+$ git clone http://llvm.org/git/dragonegg.git
+　　为了编译和安装，你需要提供LLVM安装路径。LLVM的版本必须和正在安装的DragonEgg的版本匹配。假设安装路径前缀是/usr/local/llvm（同第1章编译和安装LLVM），假设GCC 4.6已安装并且你的shell变量PATH已包含它的路径，那么你可以使用以下命令：
+$ GCC=gcc-4.6 LLVM_CONFIG=/usr/local/llvm/bin/llvm-config make
+$ cp -a dragonegg.so /usr/local/llvm/lib
+　　注意，这个项目缺失自动工具或者CMake项目文件。你应该直接用make命令编译它。如果你的gcc命令已经指定你想要的正确的版本，当你运行make时可以省略前缀GCC=gcc-4.6。编译得到的共享库dragonegg.so正是DragonEgg插件，你可以用下面的GCC命令引用它。考虑你正在编译经典的“Hello, World!”C代码。
+$ gcc-4.6 -fplugin=/usr/local/llvm/lib/dragonegg.so hello.c -o hello
+
+虽然DragonEgg理论上支持GCC 4.5和更高的版本，但是我们强烈推荐GCC 4.6。对于其它的GCC版本，DragonEgg未作广泛的测试和维护。
+理解DragonEgg和LLVM工具的编译流水线
+　　如果你想看前端的运行，请用参数-S -fplugin-arg-dragonegg-emit-ir，如此将输出一个人类可读的LLVM IR代码文件。
+$ gcc-4.6 -fplugin=/usr/local/llvm/lib/dragonegg.so -S -fplugin-arg-dragonegg-emit-ir hello.c -o hello.ll
+$ cat hello.ll
+　　编译器一旦将程序翻译为IR就停止编译，并且将这种驻留内存的表示序列化到磁盘，这种能力是LLVM的一种特别的特性。多数其它的编译器做不到。理解LLVM IR如何表示你的程序之后，你可以用若干LLVM工具手动地继续编译过程。下面的命令调用一个特殊的汇编器，将文本形式的LLVM IR转化为位码形式，还是存储在磁盘上：
+$ llvm-as hello.ll -o hello.bc
+$ file hello.bc
+hello.bc: LLVM bitcode
+　　如果你想，你可以用一个特殊的IR反汇编器（llvm-dis）将它转回人类可读形式。下面的工具将执行目标无关的优化，显示成功的代码转换的统计信息：
+$ opt -stats hello.bc -o hello.bc
+　　参数-stats是可选的。然后，你可以用LLVM后端工具将它翻译为目标机器的汇编语言：
+$ llc -stats hello.bc -o hello.S
+　　同样，参数-stats是可选的。这是一个汇编文件，你可以用GNU binutils汇编器或者LLVM汇编器处理它。下面的命令用LLVM汇编器：
+$ llvm-mc -filetype=obj hello.S -o hello.o
+　　LLVM默认使用系统链接器，因为LLVM链接器项目，lld，当前正在开发，还没有集成到核心LLVM项目中。因此，如果你没有lld，你可以用常规的编译器驱动器完成编译，它将调用系统链接器：
+$ gcc hello.o -o hello
+　　记住，出于性能的原因，真正的LLVM编译器驱动器不会将任何阶段的程序表示序列化到磁盘，除了目标文件，因为它还没有集成的链接器。它用驻留内存的表示协调LLVM若干组件展开编译。
+理解LLVM测试套件
+　　LLVM测试套件包括一套官方的程序和benchmark，用于测试LLVM编译器。对于LLVM开发者来说，测试套件是非常有用的。开发者通过编译和运行这些程序验证优化算法和对编译器的改进。如果你正在使用一个不稳定的LLVM版本，或者你修改了LLVM的源代码，怀疑某些情况不能正常工作，这时自己运行测试套件是非常有用的。然而记住，LLVM主目录包含简单回归测试和单元测试，你可以容易地用命令make check-all运行它们。测试套件和经典的回归测试和单元测试不同，因为它包含整个benchmark。
+　　你必须将LLVM测试套件放在LLVM源代码树中，让LLVM编译系统能够识别它。你可以从这个链接获取版本3.4的源代码：http://releases.llvm.org/3.4/test-suite-3.4.src.tar.gz。
+　　用下面的命令下载源代码：
+$ wget http://releases.llvm.org/3.4/test-suite-3.4.src.tar.gz
+$ tar xzf test-suite-3.4.src.tar.gz
+$ mv test-suite-3.4 llvm/projects/test-suite
+　　如果你喜欢通过SVN下载最新的可能不稳定的版本，用以下命令：
+$ cd llvm/projects
+$ svn checkout http://llvm.org/svn/llvm-project/test-suite/trunk test-suite
+　　如果你喜欢通过GIT下载，用以下命令：
+$ cd llvm/projects
+$ git clone http://llvm.org/git/llvm-project/test-suite.git
+　　为了使用这个测试套件，你需要重新生成LLVM编译文件。这种情况有点特殊，不能使用CMake。你必须让经典的configure脚本在测试套件目录中工作。请仿照第1章编译和安装LLVM中描述的配置步骤。
+　　这个测试套件有一套Makefile，测试和检查benchmark。你也可以提供定制的Makefile，评估定制的程序。将定制Makefile放在测试套件源代码目录中，命名模板：llvm/projects/test-suite/TEST.<custom>.Makefile，其中标签<custom>必须替换为你选择的名字。例子：llvm/projects/test-suite/TEST.example.Makefile。
+
+你需要重新生成LLVM编译文件，以使定制或修改的Makefile生效。
+
+　　配置过程中，将会在LLVM目标文件目录中创建一个目录，测试套件的程序和benchmark将在其中运行。若要运行和测试example Makefile，则进入第1章编译和安装LLVM中提到的目标文件目录，执行下面的命令：
+$ cd your-llvm-build-folder/projects/test-suite
+$ make TEST=”example” report
+使用LLDB
+　　LLDB（Low Level Debugger）项目以LLVM基础设施构造一个调试器。它作为Mac OS X系统的Xcode 5调试器，正在活跃地开发和发布。由于2011年开发之初就被置于Xcode范围之外，LLDB一直未发布一个稳定的版本，直到写作本文之时。你可以从这个链接获取LLDB源代码：http://releases.llvm.org/3.4/lldb-3.4.src.tar.gz。如同其它依赖LLVM的项目，将它集成到LLVM编译系统中，就可以轻松地编译它。这就是说，将源代码放在LLVM tools文件夹，如下所示：
+$ wget http://releases.llvm.org/3.4/lldb-3.4.src.tar.gz
+$ tar xvf lldb-3.4.src.tar.gz
+$ mv lldb-3.4 llvm/tools/lldb
+　　或者你可从SVN仓库获取最新版本：
+$ cd llvm/tools
+$ svn checkout http://llvm.org/svn/llvm-project/lldb/trunk lldb
+　　或者如你所愿从GIT镜像获取：
+$ cd llvm/tools
+$ git clone http://llvm.org/git/llvm-project/lldb.git
+
+　　在GNU/Linux系统上，LLDB还在试验之中。
+　　
+　　编译LLDB之前，必须先解决软件依赖：Swig，libedit（仅针对Linux），和Python。举例来说，在Ubuntu系统上，你可以用以下命令解决这些依赖：
+$ sudo apt-get install swig libedit-dev python
+　　记住，像本章介绍的其它项目一样，你需要重新生成LLVM编译文件，以使LLDB能够编译。请仿照第1章编译和安装LLVM中描述的从源代码编译LLVM的步骤。
+　　当你新安装lldb之后，为了简单测试，以参数-v运行它，打印它的版本：
+$ lldb -v
+lldb version 3.4 ( revision )
+LLDB调试练习
+　　为了见识怎么使用LLDB，我们将发起一个调试回话以分析Clang程序。Clang程序包含很多C++符号（symbol），我们可以探查它们。如果你用默认选项编译LLVM/Clang项目，得到的Clang程序就包含调试符号。所谓默认选项，就是当你运行配置脚本生成LLVM Makefile时省略--enable-optimized参数，或者当你运行CMake时设置-DCMAKE_BUILD_TYPE=”Debug”，这是默认的编译类型。
+　　如果你熟悉GDB，你可能对一个表感兴趣，它将常用的GDB命令映射到相应的LLDB命令，见http://lldb.llvm.org/lldb-gdb.html。
+　　像GDB那样，我们以待调试可执行程序的路径为命令行参数启动LLDB：
+$ lldb where-your-llvm-is-installed/bin/clang
+Current executable set to 'where-your-llvm-is-installed/bin/clang' (x86_64).
+(lldb) break main
+Breakpoint 1: where = clang`main + 48 at driver.cpp:293, address = 0x00000001000109e0
+　　我们的命令行参数是Clang程序的路径，这样开始调试它。我们以参数-v运行程序，这应该打印Clang的版本：
+(lldb) run -v
+　　LLDB停在断点之后，我们可以用next命令随意地单步通过每一行C++代码。如同GDB，LLDB接受任意命令缩写，例如n代表next，只要没有歧义：
+(lldb) n
+　　来看LLDB如何打印C++对象。单步通过直到到达声明argv或ArgAllocator对象后的代码行，打印它：
+(lldb) n
+(lldb) p ArgAllocator
+(llvm::SpecificBumpPtrAllocator<char>) $0 = {
+  Allocator = {
+    SlabSize = 4096
+    SizeThreshld = 4096
+    DefaultSlabAllocator = (Allocator = llvm::MallocAllocator @ 0x00007f85f1497f68)
+    Allocator = 0x0000007fffbff200
+    CurSlab = 0x0000000000000000
+    CurPtr = 0x0000000000000000
+    End = 0x0000000000000000
+    BytesAllocated = 0
+  }
+}
+　　当你玩够了之后，用q命令退出调试器：
+(lldb) q
+Quitting LLDB will kill one or more processes. Do you really want to proceed: [Y/n] y
+介绍libc++标准库
+　　libc++库是一个为LLVM项目集而重写的C++标准库，支持最新的C++标准，包括C++11和C++1y，以MIT许可证和UIUC许可证双授权方式发布。libc++库是Compiler-RT的一个重要伙伴，作为运行时库的一部分，和libclc（OpenCL运行时库）一起如若需要，Clang++用它们生成最终的可执行程序。它不同于Compiler-RT，因为生成libc++不是关键性的。Clang不受限于libc++，没有它时，可以让你的程序链接GNU libstdc++。如果两个库你都有，你可以用-stdlib开关选择Clang++用哪个库。libc++库支持x86和x86_64处理器，它是为Mac OS X和GNU/Linux系统设计的GNU libstdc++的替代品。
+
+　　GNU/Linux上的libc++还在开发中，不像Mac OS X上的libc++那样稳定。
+　　
+　　根据libc++开发者，继续使用GNU libstdc++的一个主要障碍是，它需要重写大部分代码以支持较新的C++标准，libstdc++主分支的开发切换到一个GPLv3许可证，这是支持LLVM项目的一些公司所不能使用的。注意，LLVM项目通常应用于商业产品，以一种和GPL哲学不相容的方式。面对这些难题，LLVM社区决定开发一个新的C++标准库，主要为Mac OS X，也支持Linux。
+　　在苹果电脑上获取libc++最容易的方法是安装Xcode 4.2或更新版本。
+　　如果你打算为GNU/Linux机器自己编译这个库，记住C++标准库包括它本身和一个低层库，后者实现异常处理和运行时类型信息（RTTI）的功能。这种分离的设计使得C++标准库更易于移植到其它系统。这也给了你不同的选项，当你编译自己的C++标准库时。你可以选择libc++链接libsupc++（GNU实现的底层库），或者libc++abi（LLVM团队实现的底层库）。然而，目前libc++abi仅支持Mac OS X系统。
+　　想要在GNU/Linux上用libsupc++编译libc++，首先下载如下源代码：
+$ wget http://releases.llvm.org/3.4/libcxx-3.4.src.tar.gz
+$ tar xvf libcxx-3.4.src.tar.gz
+$ mv libcxx-3.4 libcxx
+　　直到本文写作之时，还是不能依靠LLVM编译系统来编译这个库，如我们编译其它项目那样。因此注意，这次我们不将libc++源代码放在LLVM源代码树中。
+　　作为选择，可以从SVN代码仓库获取最新的试验版本：
+$ svn co http://llvm.org/svn/llvm-project/libcxx/trunk libcxx
+　　也可以使用GIT镜像：
+$ git clone http://llvm.org/git/llvm-project/libcxx.git
+　　一旦你用上了一个LLVM编译器，你需要生成libc++编译文件，它们具体地调用这个新的LLVM编译器。在我们的例子中，假设我们的PATH中已存在一个可用的LLVM 3.4编译器。
+　　为了使用libsupc++，首先需要找出它的头文件安装在系统的何处。在GNU/Linux上，它是常规GCC编译器的一部分，因此可以用下面的命令寻找它们：
+$ echo | g++ -Wp,-v -x c++ - -fsyntax-only
+#include "..." search starts here:
+#include <...> search starts here:
+ /usr/include/c++/4.7.0
+ /usr/include/c++/4.7.0/x86_64-pc-linux-gnu
+ （省略后续条目）
+　　通常地，前两条路径指明libsupc++头文件在何处。为了验证，查看一个libsupc++头文件是否存在，例如bits/exception_ptr.h：
+$ find /usr/include/c++/4.7.0 | grep bits/exception_ptr.h
+　　然后，生成libc++编译文件，用LLVM编译器编译它。这需要改写shell中CC和CXX环境变量，它们分别定义系统C和C++编译器，改写为你想要集成libc++的LLVM编译器。如果采用CMake方法用libsupc++编译libc++，需要定义CMake参数LIBCXX_CXX_ABI，它指定使用哪个低层库，还有LIBCXX_LIBSUPCXX_INCLUDE_PATHS，它指定之前找到的libsupc++头文件路径列表，路径之间用分号分隔。示例如下：
+$ mkdir where-you-want-to-build
+$ cd where-you-want-to-build
+$ CC=clang CXX=clang++ cmake -DLIBCXX_CXX_ABI=libstdc++ -DLIBCXX_LIBSUPCXX_INCLUDE_PATHS="/usr/include/c++/4.7.0;/usr/include/c++/4.7.0/x86_64-pc-linux-gnu" -DCMAKE_INSTALL_PREFIX="/usr" ../libcxx
+　　这里，需确保../libcxx是从当前目录到libc++源代码文件夹的正确路径。运行make命令以编译项目。为安装命令使用sudo，因为我们将安装这个库到/usr，让clang++以后能找到它。
+$ make && sudo make install
+　　你可以对新的库和最新的C++标准做个试验，当你用clang++编译一个C++项目时，输入参数-stdlib=libc++。
+　　为了检验新的库在起作用，用下面的命令编译一个简单的C++应用：
+$ clang++ -stdlib=libc++ hello.cpp -o hello
+　　用readelf命令分析这个hello可执行文件，确认它的确链接了新的libc++库。这个简单的实验是可行的：
+$ readelf d hello
+Dynamic section at offset 0x2f00 contains 25 entries:
+ Tag          Type       Name/Value
+0x00000001 (NEEDED)  Shared library: [libc++.so.1]
+　　上面的代码省略了后续条目。我们清楚地看到，第１个ELF动态section条目明确地要求加载libc++.so.1共享库（正是我们刚刚编译的），证实了我们的C++程序现在在用新的LLVM C++标准库。你可以从官方项目站点获得更多信息：http://libcxx.llvm.org。
+总结
+　　LLVM由若干项目组成，对主编译器驱动器来说，其中一些不是必需的，但它们是有用的工具和程序库。在本章中，我们展示了如何编译和安装这些部件。后续章节将深入探索其中的一些工具。建议读者到时再回到本章阅读编译和安装说明。
+　　在下一章，我们将介绍LLVM核心库和工具的设计。
+
