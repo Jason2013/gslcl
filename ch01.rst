@@ -387,25 +387,25 @@ Windows和Microsoft Visual Studio
 
 1. 获取一份Microsoft Visual Studio 2012的副本。
 2. 下载并安装官方的CMake工具二进制发布版本，下载地址http://www.cmake.org。在安装的时候，务必勾选Add CMake to the system PATH for all users选项。
-3. CMake会生成Visual Studio所需的项目文件以配置并编译LLVM。首先，运行cmake-gui图形工具。然后，点击Browse Source …按钮，选择LLVM源代码目录。接着，点击Browse Build按钮，选择一个存放CMake生成文件的目录，将来Visual Studio会使用它，如下面的截屏所示：
+3. CMake会生成Visual Studio所需的项目文件以配置并编译LLVM。首先，运行cmake-gui图形工具。然后，点击Browse Source ...按钮，选择LLVM源代码目录。接着，点击Browse Build按钮，选择一个存放CMake生成文件的目录，将来Visual Studio会使用它，如下面的截屏所示：
 
 .. figure:: ch01/cmake_2.8.11.2_config.png
-   :align: center 
+   :align: center
 
 4. 点击Add Entry并定义CMAKE_INSTALL_PREFIX以指定LLVM工具的安装路径，如下面的截屏所示：
 
 .. figure:: ch01/add_cache_entry1.png
-   :align: center 
+   :align: center
 
 5. 此外，可以通过LLVM_TARGETS_TO_BUILD指定支持的目标集合，如下面的截屏所示。可选地，你可以添加任意其它的项来定义我们之前讨论过的CMake参数。
 
 .. figure:: ch01/add_cache_entry2.png
-   :align: center 
+   :align: center
 
 6. 点击Configure按钮。弹出的窗口询问使用什么项目生成器和编译器；选择Visual Studio 2012（选项Visual Studio 11）和Use default native compilers。点击Finish，如下面的截屏所示：
 
 .. figure:: ch01/cmake-gui.png
-   :align: center 
+   :align: center
 
 .. note::
 
@@ -421,7 +421,7 @@ Windows和Microsoft Visual Studio
 .. code-block:: bash
 
     C:>"C:\Program Files (x86)\LLVM\install\bin\clang.exe" –v
-    clang version 3.4…
+    clang version 3.4...
 
 Mac OS X和Xcode
 ================
@@ -452,7 +452,7 @@ Mac OS X和Xcode
 .. code-block:: bash
 
     $ /Users/Bruno/llvm/install/bin/clang –v
-    clang version 3.4…
+    clang version 3.4...
 
 总结
 ****
