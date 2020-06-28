@@ -107,22 +107,22 @@
 
 .. code-block:: c
 
-#include <stdio.h>
-#include <stdint.h>
-#include <stdlib.h>
+    #include <stdio.h>
+    #include <stdint.h>
+    #include <stdlib.h>
 
-int main() {
-    uint64_t a = 0ULL, b = 0ULL;
-    scanf("%lld %lld", &a, &b);
-    printf("64-bit division is %lld\n", a / b);
-    return EXIT_SUCCESS;
-}
+    int main() {
+        uint64_t a = 0ULL, b = 0ULL;
+        scanf("%lld %lld", &a, &b);
+        printf("64-bit division is %lld\n", a / b);
+        return EXIT_SUCCESS;
+    }
 
 .. note::
 
     下载示例代码
     
-    你可以从http://www.packtpub.com用你的帐号下载示例代码文件，为所有你已经购买的Packt书籍。如果你在别处购买了这本书，你就访问http://www.packtpub.com/support并注册，这样代码文件就可以通过邮件直接发送给你。
+    你可以从 http://www.packtpub.com 用你的帐号下载示例代码文件，为所有你已经购买的Packt书籍。如果你在别处购买了这本书，你就访问 http://www.packtpub.com/support 并注册，这样代码文件就可以通过邮件直接发送给你。
 　　
 　　  如果你有64位x86系统，用你的LLVM编译器执行如下两个命令：
   
@@ -141,7 +141,7 @@ int main() {
 
 .. code-block:: c
 
-divq	-24(%rbp)
+    divq	-24(%rbp)
 
 使用DragonEgg插件
 *****************
