@@ -75,7 +75,7 @@ LLVM的基本设计原则和它的历史
 
 　　考虑简单的C程序，hello.c：
 
-::code-block: c
+.. code-block: c
 
     #include <stdio.h>
 
@@ -174,17 +174,17 @@ LLVM的基本设计原则和它的历史
 
 .. code-block:: bash
 
-　　  $ llc -filetype=obj main.bc -o main.o
-　　  $ llc -filetype=obj sum.bc -o sum.o
-　　  $ clang main.o sum.o -o sum
+    $ llc -filetype=obj main.bc -o main.o
+    $ llc -filetype=obj sum.bc -o sum.o
+    $ clang main.o sum.o -o sum
 
 * 首先，链接这两个LLVM bitcode为一个最终的LLVM bitcode。然后，为这个最终的bitcode生成目标特定的目标文件，通过调用系统链接器生成程序可执行文件（下图中的B部分）：
 
 .. code-block:: bash
 
-　　  $ llvm-link main.bc sum.bc -o sum.linked.bc
-　　  $ llc -filetype=obj sum.linked.bc -o sum.linked.o
-　　  $ clang sum.linked.o -o sum
+    $ llvm-link main.bc sum.bc -o sum.linked.bc
+    $ llc -filetype=obj sum.linked.bc -o sum.linked.o
+    $ clang sum.linked.o -o sum
 
 　　参数-filetype=obj指定输出目标文件，而不是输出目标汇编文件。我们利用Clang驱动器，clang，来调用链接器。然而这个系统链接器可以被直接调用，假如你知道你的系统链接器链接系统库所需要的所有参数。
 
@@ -227,9 +227,9 @@ LLVM的基本设计原则和它的历史
 .. code-block:: cpp
 
     class MipsTargetMachine : public LLVMTargetMachine {
-　　      MipsSubtarget Subtarget;
-      　　const DataLayout DL;
-　　  ...
+        MipsSubtarget Subtarget;
+        const DataLayout DL;
+    ...
 
 　　为了进一步阐明这种设计理念，我们展示另一个后端的例子，在这个例子中，目标无关的寄存器分配器（它是所有后端共同的）需要知道那些寄存器是保留而不能用以分配的。此信息依赖于具体的目标，不能在通用的超类中确定。这通过调用函数MachineRegisterInfo::getReservedRegs()确定，每个目标必须重写这个通用方法。下面的代码片段（源自llvm/lib/Target/Sparc/SparcRegisterInfo.cpp）演示了SPARC目标如何重写这个方法：
 
@@ -288,7 +288,7 @@ LLVM的基本设计原则和它的历史
 
 　　在LLVM中你将频繁看到的另一种常用实践是运用智能指针。一旦变量生命期终结，智能指针自动释放内存，举例来说，LLVM代码用它们存放目标信息和模块（module）。过去，LLVM提供了一种特殊的智能指针类，称为OwningPtr，在llvm/include/llvm/ADT/OwningPtr.h中定义。自LLVM3.5起，这个类被弃用，代之以C++11标准提出的std::unique_ptr()。
 
-　　如果你有兴趣了解LLVM项目采用的C++最好实践的完整列表，查阅http://llvm.org/docs/CodingStandards.html。每个C++程序员值得一读。
+　　如果你有兴趣了解LLVM项目采用的C++最好实践的完整列表，查阅 http://llvm.org/docs/CodingStandards.html 。每个C++程序员值得一读。
 
 在LLVM中让字符串引用轻量化
 -------------------------
@@ -313,7 +313,7 @@ LLVM的基本设计原则和它的历史
 
 　　LLVM还设计了另一个字符串操作类。LLVM提供Twine类，用以通过若干串联构建新的字符串。它延迟实际的串联，通过仅记录若干字符串的引用，它们将组成最终的产物。这是在前C++11时期设计的，当时字符串串联的代价高。
 
-　　如果你有兴趣找出LLVM提供给它的编程者的其它通用类，你的书签值得收藏一份非常重要的文档，就是LLVM编程者手册，手册讨论所有LLVM通用数据结构，它们对一般编程都是有益的。此手册位于http://llvm.org/docs/ProgrammersManual.html。
+　　如果你有兴趣找出LLVM提供给它的编程者的其它通用类，你的书签值得收藏一份非常重要的文档，就是LLVM编程者手册，手册讨论所有LLVM通用数据结构，它们对一般编程都是有益的。此手册位于 http://llvm.org/docs/ProgrammersManual.html 。
 
 演示插件式Pass接口
 ==================
@@ -488,8 +488,8 @@ BugType *bugType = new BugType("This is a bug name", "This is a bug category nam
 .. code-block:: bash
 
     error: no matching constructor for initialization of 'clang::ento::BugType' BugType *bugType = new BugType("This is a bug name",
-                          ^
-~~~~~~~~~~~~
+                           ^
+    ~~~~~~~~~~~~
 
 　　出现这个错误，是因为BugType构造器从一个版本变到了另一个。如果你弄不清楚怎么调整你的代码，你需要阅读修改日志，这是重要的文档，它陈述某段时间内的代码改动。幸运的是，对于采用代码修改系统的开源项目，通过查询代码修改服务器，我们可以轻松地得到作用一个具体文件的提交的消息。对于LLVM，你甚至可以用浏览器通过ViewVC查询：http://llvm.org/viewvc。
 
