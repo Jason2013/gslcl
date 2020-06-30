@@ -194,7 +194,7 @@ LLVM的基本设计原则和它的历史
 
 　　参数-filetype=obj指定输出目标文件，而不是输出目标汇编文件。我们利用Clang驱动器，clang，来调用链接器。然而这个系统链接器可以被直接调用，假如你知道你的系统链接器链接系统库所需要的所有参数。
 
-.. figure:: ch03/llvm_standalone_tools.png
+.. figure:: ch03/llvm_standalone_tools.PNG
    :align: center
 
 　　调用后端（llc）之前链接IR文件，使得opt工具提供的链接时优化（例子见第5章LLVM中间表示）能够进一步优化最终产生的IR。作为替代，llc工具能够生成汇编输出，可以利用llvm-mc进一步汇编它。我们在第6章后端说明这种接口的详细内容。
@@ -223,7 +223,7 @@ LLVM的基本设计原则和它的历史
 
 　　此处是LLVM程序库概览，省略的库留到后续章节介绍。对于版本3.0，LLVM团队写了一份好的文档，说明所有LLVM库之间的依赖关系。尽管文档已经过时，它仍然是一份针对程序库组织的有趣的概述。文档页面：http://releases.llvm.org/3.0/docs/UsingLibraries.html
 
-.. figure:: ch03/llvm_basic_libraries.png
+.. figure:: ch03/llvm_basic_libraries.PNG
    :align: center
 
 介绍LLVM中的C++实践
@@ -355,7 +355,7 @@ LLVM的基本设计原则和它的历史
 　　下图中的A部分举例说明了在opt工具中优化Pass是如何被插入的；B部分说明了代码生成阶段的几个目标挂钩函数，用于插入定制的目标优化。注意插入点分布于不同的代码生成阶段。当你第一次编写Pass需要决定在何处运行时，这张图是特别有用的。第5章LLVM中间表示，将详细描述PassManager接口。
 
 
-.. figure:: ch03/llvm_pluggable_pass.png
+.. figure:: ch03/llvm_pluggable_pass.PNG
    :align: center
 
 编写第一个LLVM项目
@@ -487,8 +487,8 @@ LLVM的基本设计原则和它的历史
 
 　　邮件列表提醒着你不是孤单的。Clang前端的邮件列表是cfe-dev，LLVM核心库的邮件列表是llvmdev。在下面的地址花点时间订阅它们：
 
-　　*Clang前端开发者列表（http://lists.llvm.org/mailman/listinfo/cfe-dev）
-　　*LLVM核心开发者列表（http://lists.llvm.org/mailman/listinfo/llvm-dev）
+*Clang前端开发者列表（http://lists.llvm.org/mailman/listinfo/cfe-dev）
+*LLVM核心开发者列表（http://lists.llvm.org/mailman/listinfo/llvm-dev）
 
 　　为项目工作的人很多，有的正在尝试着实现你也感兴趣的东西。因此，很有可能，你想问的问题，其他人已经处理过了。
 
