@@ -98,7 +98,7 @@ LLVM的基本设计原则和它的历史
 
 .. note::
 
-　　参考第1章编译和安装LLVM中的说明，获得一份现成的LLVM。
+    参考第1章编译和安装LLVM中的说明，获得一份现成的LLVM。
 　　
 　　对于熟悉GCC的人，注意前面的命令和GCC命令非常相似。事实上，Clang编译器驱动器被设计成跟GCC的参数和命令结构相兼容，使得在很多项目中能够用LLVM代替GCC。对于Windows，Clang有一个称为clang-cl.exe的版本，它模仿Visual Studio C++编译器命令行接口。Clang编译器驱动器隐式地调用所有其它的工具，从前端到链接器。
 
@@ -172,7 +172,7 @@ LLVM的基本设计原则和它的历史
 
 .. note::
 
-注意，不用参数-emit-llvm或-flto时，参数-c用目标机器语言生成目标文件，而参数-S生成目标汇编语言文件。这种行为是和GCC兼容的。
+    注意，不用参数-emit-llvm或-flto时，参数-c用目标机器语言生成目标文件，而参数-S生成目标汇编语言文件。这种行为是和GCC兼容的。
 　　
 　　这里.bc和.ll分别是LLVM bitcode和汇编文件的文件扩展名。为了继续编译，我们采用下面两种方式：
 
@@ -194,7 +194,7 @@ LLVM的基本设计原则和它的历史
 
 　　参数-filetype=obj指定输出目标文件，而不是输出目标汇编文件。我们利用Clang驱动器，clang，来调用链接器。然而这个系统链接器可以被直接调用，假如你知道你的系统链接器链接系统库所需要的所有参数。
 
-.. figure:: ch03/llvm_standalone_tools.PNG
+.. figure:: ch03/llvm_standalone_tools.png
    :align: center
 
 　　调用后端（llc）之前链接IR文件，使得opt工具提供的链接时优化（例子见第5章LLVM中间表示）能够进一步优化最终产生的IR。作为替代，llc工具能够生成汇编输出，可以利用llvm-mc进一步汇编它。我们在第6章后端说明这种接口的详细内容。
@@ -223,7 +223,7 @@ LLVM的基本设计原则和它的历史
 
 　　此处是LLVM程序库概览，省略的库留到后续章节介绍。对于版本3.0，LLVM团队写了一份好的文档，说明所有LLVM库之间的依赖关系。尽管文档已经过时，它仍然是一份针对程序库组织的有趣的概述。文档页面：http://releases.llvm.org/3.0/docs/UsingLibraries.html
 
-.. figure:: ch03/llvm_basic_libraries.PNG
+.. figure:: ch03/llvm_basic_libraries.png
    :align: center
 
 介绍LLVM中的C++实践
@@ -355,7 +355,7 @@ LLVM的基本设计原则和它的历史
 　　下图中的A部分举例说明了在opt工具中优化Pass是如何被插入的；B部分说明了代码生成阶段的几个目标挂钩函数，用于插入定制的目标优化。注意插入点分布于不同的代码生成阶段。当你第一次编写Pass需要决定在何处运行时，这张图是特别有用的。第5章LLVM中间表示，将详细描述PassManager接口。
 
 
-.. figure:: ch03/llvm_pluggable_pass.PNG
+.. figure:: ch03/llvm_pluggable_pass.png
    :align: center
 
 编写第一个LLVM项目
@@ -487,8 +487,8 @@ LLVM的基本设计原则和它的历史
 
 　　邮件列表提醒着你不是孤单的。Clang前端的邮件列表是cfe-dev，LLVM核心库的邮件列表是llvmdev。在下面的地址花点时间订阅它们：
 
-*Clang前端开发者列表（http://lists.llvm.org/mailman/listinfo/cfe-dev）
-*LLVM核心开发者列表（http://lists.llvm.org/mailman/listinfo/llvm-dev）
+* Clang前端开发者列表（http://lists.llvm.org/mailman/listinfo/cfe-dev）
+* LLVM核心开发者列表（http://lists.llvm.org/mailman/listinfo/llvm-dev）
 
 　　为项目工作的人很多，有的正在尝试着实现你也感兴趣的东西。因此，很有可能，你想问的问题，其他人已经处理过了。
 
@@ -516,7 +516,7 @@ BugType *bugType = new BugType("This is a bug name", "This is a bug category nam
 
 .. note::
 
-如果你在用文本模式的编辑器，一定用工具导航LLVM源代码。比如，花一点时间看看如何在你的编辑器中使用CTAGS。你将轻易地在LLVM源代码树中找到定义你所感兴趣的类的每个文件。如果你固执地不想用CTAGS或其它工具（例如Visual Studio的IntelliSense或Xcode），帮助你导航大型C/C++项目，你总是可以运用一个命令，例如grep -re "keyword" *，在项目的根目录中执行它，以列出所有包含此关键词的文件。通过使用智能关键词，你可以轻易地找到定义文件。
+    如果你在用文本模式的编辑器，一定用工具导航LLVM源代码。比如，花一点时间看看如何在你的编辑器中使用CTAGS。你将轻易地在LLVM源代码树中找到定义你所感兴趣的类的每个文件。如果你固执地不想用CTAGS或其它工具（例如Visual Studio的IntelliSense或Xcode），帮助你导航大型C/C++项目，你总是可以运用一个命令，例如grep -re "keyword" *，在项目的根目录中执行它，以列出所有包含此关键词的文件。通过使用智能关键词，你可以轻易地找到定义文件。
 
 　　为了查看作用这个具体的头文件的提交消息，我们访问 http://llvm.org/viewvc/llvm-project/cfe/trunk/include/clang/StaticAnalyzer/Core/BugReporter/BugType.h?view=log ，它在浏览器中打印出日志。现在，我们看到一次具体的修订，发生在写作此书三个月之前，当时LLVM更新到v3.5：
 

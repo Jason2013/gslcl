@@ -152,6 +152,9 @@
   
 　　这个插件将GCC的中后端替换成LLVM的中后端，自动执行所有的编译步骤，如你对第一流编译器驱动器期望的那样。下图描绘了这种新的编译流水线情景：
 
+.. figure:: ch02/dragon_egg_plugin.png
+    :align: center
+
 　　根据你的愿望，你可以用参数-fplugin-arg-dragonegg-emit-ir -S让编译流水线在生成LLVM IR阶段停止，而后用LLVM工具分析和调查前端的结果，或者自己用LLVM工具完成编译。待会我们将举一个例子。
   
 　　作为一个LLVM附属项目，DragonEgg不放在和LLVM主项目相同的地方。写作本文之时，最新的DragonEgg稳定版是3.3，依赖LLVM 3.3工具集。因此，对于生成的LLVM bitcode，即存储在磁盘上的LLVM IR程序文件，你只能使用3.3版LLVM工具分析它，优化它，或者继续编译它。DragonEgg的官方网站是http://dragonegg.llvm.org
@@ -311,7 +314,7 @@
 
 .. note::
 
-　　在GNU/Linux系统上，LLDB还在试验之中。
+    在GNU/Linux系统上，LLDB还在试验之中。
 　　
 　　编译LLDB之前，必须先解决软件依赖：Swig，libedit（仅针对Linux），和Python。举例来说，在Ubuntu系统上，你可以用以下命令解决这些依赖：
   
