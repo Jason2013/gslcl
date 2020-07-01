@@ -5,7 +5,7 @@ LLVM基础设施适用于若干 **Unix** 系统（GNU/**Linux**，**FreeBSD** �
 
 LLVM的新手使用者必须明白，基本的LLVM编译器包括LLVM和Clang的库和工具。因此，本章的目的在于说明如何编译（build）并安装（install）它们。本书自始自终都将聚焦LLVM版本3.4。然而，LLVM是一个年轻的项目，处于活跃的开发期，因此它在不断地改变；知道这一点是重要的。
 
-.. tip::
+.. note::
 
    写作本书的时候，LLVM 3.5还没有发布。尽管这本书讲解LLVM 3.4，但是我们计划在2014年9月的第三个星期发布一个附录，将本书中的例子更新到LLVM 3.5，让你能够以LLVM最新的版本练习本书的内容。这个附录将可以从 `https://www.packtpub.com/sites/default/files/downloads/6924OS_Appendix.pdf <https://www.packtpub.com/sites/default/files/downloads/6924OS_Appendix.pdf>`_ 得到。
 
@@ -66,7 +66,7 @@ ARMv7/ARMv7a Linux-generic
 
 如果你在运行Clang的时候遇到问题，试着从安装Clang的文件夹直接运行二进制文件，以确定你的问题不是错误配置PATH环境变量的问题。如果它还是不能工作，你可能下载了一个不兼容系统的预编译二进制文件。记住，当被编译的时候，二进制文件链接特定版本的动态库。在运行应用程序的时候发生链接的错误，是一个清楚的征兆说明你在使用一个不兼容你的系统的二进制文件。
 
-.. tip::
+.. note::
 
     在Linux上，举例来说，报告链接错误的时候，它会打印出二进制文件的名字，无法加载的动态库的名字，以及错误消息。注意在屏幕上打印出来的动态库的名字。这是一个清楚的信号，说明系统的动态链接器和加载器无法加载这个库，因为这个程序不是为兼容系统准备的。
 
@@ -113,7 +113,7 @@ Windows
 
 Windows特定的LLVM/Clang快照安装器可以从http://llvm.org/builds的Windows snapshot builds小节下载得到。最终的LLVM/Clang工具默认被安装在C:\Program Files\LLVM\bin（这个位置可能会变，取决于发布）。注意，有一个单独的模仿Visual C++ cl.exe的Clang驱动器，名为clang-cl.exe。如果你打算使用经典的GCC兼容的驱动器，就用clang.exe。
 
-.. tip::
+.. note::
 
     注意，快照发布是不稳定，可能是高度实验性的。
 

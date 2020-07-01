@@ -60,10 +60,10 @@
 
 　　从内部来说，每次clang -cc1调用都是由一种主要前端活动来控制的。完整的活动集合的定义在源文件include/clang/Frontend/FrontendOptions.h中。下表列出了一些例子，描述了clang -cc1可能执行的不同的任务：
 
-============ ========================================
-活动          描述
-============ ========================================ASTView       解析抽象语法树并用Graphviz显示EmitBC        输出LLVM bitcode .bc文件EmitObj       输出目标特定的.o文件FixIt         解析并应用所有fixit到源代码PluginAction  运行一个插件活动RunAnalysis   运行一次或多次源代码分析
-============ ========================================
+================ ==========================================================================================
+活动              描述
+================ ==========================================================================================ASTView           解析抽象语法树并用Graphviz显示EmitBC            输出LLVM bitcode .bc文件EmitObj           输出目标特定的.o文件FixIt             解析并应用所有fixit到源代码PluginAction      运行一个插件活动RunAnalysis       运行一次或多次源代码分析
+================ ==========================================================================================
 　　选项-cc1触发cc1_main函数的执行（详情参见源代码文件tools/driver/cc1_main.cpp）。例如，当通过clang hello.c -o hello间接地调用-cc1时，这个函数初始化目标特定的信息，建立诊断基础设施，执行EmitObj活动。这个活动由CodeGenAction实现，FrontendAction的一个子类。此代码会实例化所有Clang和LLVM组件，指挥它们生成目标文件。
 
 　　不同前端活动的共存，让Clang能够为了编译以外的目的运行编译管线，例如静态分析。还有，你可以通过-target命令行参数为clang指定目标，根据这个目标，它将加载不同的ToolChain对象。这会改变哪些任务应该由-cc1执行，通过执行不同的前端活动，也会改变哪些任务应该由外部工具执行，使用哪些外部工具。例如，某个目标可能使用GNU汇编器和GNU链接器以完成编译，而另一个可能使用LLVM集成的汇编器和GNU链接器。如果你不清楚Clang为你的目标在使用了哪些外部工具，你总是可以借助-###选项打印驱动器命令。我们在第8章，交叉平台编译，对不同的目标作了更多的讨论。
@@ -73,14 +73,14 @@
 
 　　自此以后，我们会将Clang视作一套程序库——它们实现了一个编译器前端，而不是驱动器和编译器应用程序。在这个意义上，Clang是模块化设计的，由若干程序库组成。libclang（http://clang.llvm.org/doxygen/group__CINDEX.html）是为外部Clang用户设计的最重要的接口，它通过C API提供了大量的前端功能。它包含若干Clang程序库，也可以单独使用它们，跟你的项目链接在一起。下面为本章列出最相关的程序库：
 
-    * libclangLex：这个库用于预处理和词法分析，处理宏、标记、pragma构造
-    * libclangAST：这个库提供编译、操作、遍历抽象语法树的功能
-    * libclangParse：这个库用于解析程序逻辑，利用词法阶段的结果
-    * libclangSema：这个库用于语义分析，为AST验证提供动作
-    * libclangCodeGen：这个库利用目标特定信息进行LLVM IR代码生成
-    * libclangAnalysis：这个库包含静态分析的资源
-    * libclangRewrite：这个库支持代码重写，为编译代码重构工具提供基础设施（详情参见第10章Clang工具和LibTooling）
-    * libclangBasic：这个库提供一系列实用工具—内存分配抽象、源代码位置、诊断，等。
+* libclangLex：这个库用于预处理和词法分析，处理宏、标记、pragma构造
+* libclangAST：这个库提供编译、操作、遍历抽象语法树的功能
+* libclangParse：这个库用于解析程序逻辑，利用词法阶段的结果
+* libclangSema：这个库用于语义分析，为AST验证提供动作
+* libclangCodeGen：这个库利用目标特定信息进行LLVM IR代码生成
+* libclangAnalysis：这个库包含静态分析的资源
+* libclangRewrite：这个库支持代码重写，为编译代码重构工具提供基础设施（详情参见第10章Clang工具和LibTooling）
+* libclangBasic：这个库提供一系列实用工具—内存分配抽象、源代码位置、诊断，等。
 
 使用libclang
 -------------
@@ -228,9 +228,9 @@
 
 .. note::
 
-实现我们自己的Clang工具的困难之处，在于缺少驱动器的参数猜测能力，它提供充足的参数以在你的系统上处理源文件。举例来说，如果你在开发Clang插件，你不会有这样的忧虑。为了解决这个问题，你可使用编译器命令数据库，它给出恰当的参数集，用以处理你想要分析的每个输入源文件，见第10章Clang工具和LibTooling中的讨论。这种情况，我们可以用CMake生成数据库。不过，在我们的例子中，我们自己提供这些参数。
+    实现我们自己的Clang工具的困难之处，在于缺少驱动器的参数猜测能力，它提供充足的参数以在你的系统上处理源文件。举例来说，如果你在开发Clang插件，你不会有这样的忧虑。为了解决这个问题，你可使用编译器命令数据库，它给出恰当的参数集，用以处理你想要分析的每个输入源文件，见第10章Clang工具和LibTooling中的讨论。这种情况，我们可以用CMake生成数据库。不过，在我们的例子中，我们自己提供这些参数。
 　　
-　　信息经过解析并存储在CXTranslationUnit C数据结构之后，我们实现了一个循环，遍历Clang产生的所有诊断，并把它们输出到屏幕。为此，首先利用clang_getNumDiagnostics()获取解析这个文件时产生的诊断数量，并决定循环的界限（参见http://clang.llvm.org/doxygen/group__CINDEX__DIAG.html）。然后，对于每次循环遍历，利用clang_getDiagnostic()获取当前的诊断，利用clang_getDiagnosticCategoryText()获取描述这个诊断类型的字符串，利用clang_getDiagnosticSpelling()获取显示给用户的消息，利用clang_getDiagnosticLocation()获取它所发生的准确代码位置。我们还利用clang_getDiagnosticSeverity()获取代表此诊断的严重程度的枚举数字（NOTE，WARNING，EXTENSION，EXTWARN，或ERROR），但是为简单起见，我们将它变换为无符号数，并当作数字打印它。
+　　信息经过解析并存储在CXTranslationUnit C数据结构之后，我们实现了一个循环，遍历Clang产生的所有诊断，并把它们输出到屏幕。为此，首先利用clang_getNumDiagnostics()获取解析这个文件时产生的诊断数量，并决定循环的界限（参见 http://clang.llvm.org/doxygen/group__CINDEX__DIAG.html）。然后，对于每次循环遍历，利用clang_getDiagnostic()获取当前的诊断，利用clang_getDiagnosticCategoryText()获取描述这个诊断类型的字符串，利用clang_getDiagnosticSpelling()获取显示给用户的消息，利用clang_getDiagnosticLocation()获取它所发生的准确代码位置。我们还利用clang_getDiagnosticSeverity()获取代表此诊断的严重程度的枚举数字（NOTE，WARNING，EXTENSION，EXTWARN，或ERROR），但是为简单起见，我们将它变换为无符号数，并当作数字打印它。
 
 　　因为这种C接口缺少C++ string类，当处理字符串时，这些函数经常返回一个特殊的CXString对象，这需要你调用clang_getCString()得到内部的char指针以打印它，之后调用clang_disposeString()以删除它。
 
@@ -676,7 +676,7 @@
 
 .. note::
 
-虽然可以用此代码结构建立分析，但是，如果你感到你的分析相当复杂，需要一种像控制流图（CFG）这样的结构，就不要用cursor或libclang——将你的分析实现为一个Clang插件更合适，它直接调用Clang C++ API用AST创建CFG（参见http://clang.llvm.org/docs/ClangPlugins.html和CFG::buildCFG方法）。通常来说，直接根据AST建立分析比利用CFG建立分析来得更加困难。你还应该看一看第9章Clang静态分析器，它解释如何建立强大的Clang静态分析。
+    虽然可以用此代码结构建立分析，但是，如果你感到你的分析相当复杂，需要一种像控制流图（CFG）这样的结构，就不要用cursor或libclang——将你的分析实现为一个Clang插件更合适，它直接调用Clang C++ API用AST创建CFG（参见http://clang.llvm.org/docs/ClangPlugins.html和CFG::buildCFG方法）。通常来说，直接根据AST建立分析比利用CFG建立分析来得更加困难。你还应该看一看第9章Clang静态分析器，它解释如何建立强大的Clang静态分析。
 
 　　在前面的例子中，我们忽略了client_data和parent参数。我们简单地利用clang_getCursorKind()函数检测当前cursor是否指向一个C函数声明（CXCursor_FunctionDecl）或者C++方法（CXCursor_CXXMethod）。当我们确信正在访问正确的cursor时，我们会利用两个函数从cursor提取信息：用clang_getCursorSpelling()得到这个AST节点对应的代码，用clang_getCursorLocation()得到和它关联的CXSourceLocation对象。接着，打印这些信息——所用的方式和之前诊断项目所用的相似，并返回CXChildVisit_Continue以结束函数。我们之所以用这个选项，是因为我们确信不存在嵌套的函数声明，继续遍历访问这个cursor的子节点是没有意义的。
 
@@ -881,13 +881,13 @@
 
 　　以上代码对输入的源文件运行词法器、解析器、语义分析，输入文件可从命令行指定。它打印解析的源代码和AST统计，然后结束运行。此代码执行了以下步骤：
 
-　　1. CompilerInstance类管理整个编译过程基础设施（参见http://clang.llvm.org/doxygen/classclang_1_1CompilerInstance.html）。第一步实例化这个类，存为CI。
-　　2. 通常，clang -cc1会实例化一个具体的FrontendAction，它执行这里介绍的所有步骤。因为我们想向你暴露这些步骤，所有不使用FrontendAction；作为替代，我们将自己配置CompilerInstance。我们利用一个CompilerInstance方法创建诊断引擎，从系统获得一个目标三元组，作为当前的目标。
-　　3. 现在我们实例化三个新的资源：一个文件管理器，一个源代码管理器，一个预处理器。第一个是读源文件所必需的，第二个负责管理SourceLocation实例，为词法器和解析器所用。
-　　4. 我们创建一个ASTConsumer引用，传给CI。这让前端客户能够以其自己的方式接收最终的AST（在解析和语义分析之后）。例如，如果我们想让驱动器生成LLVM IR代码，就需要提供一个具体的代码生成ASTConsumer实例（称为BackendConsumer），这正好是CodeGenAction设置它的CompilerInstance的ASTConsumer的方式。在此例中，我们包含了头文件ASTConsumers.h，它为我们提供了各式各样的用作实验consumer（接收者），而我们用了一个仅仅打印AST到控制台的consumer。我们借助CreateASTPrinter()调用创建了它。如果你感兴趣，就花点时间实现你自己的ASTConsumer子类，执行任何你感兴趣的前端分析（从阅读lib/Frontend/ASTConsumers.cpp开始，它有一些实现的例子）。
-　　5. 我们创建一个新的ASTContext和Sema，分别为解析器和语义分析器所用，把它们推送给CI对象。我们还初始化了诊断consumer（这里，我们的标准consumer也仅仅打印诊断到屏幕）。
-　　6. 我们调用ParseAST以执行词法和语法分析，它们会接着借助HandleTranslationUnit函数调用，去调用我们的ASTConsumer。Clang也会打印诊断并中断流水线，如果在任何前端阶段发现一个严重的错误。
-　　7. 打印AST统计信息到标准输出。
+1. CompilerInstance类管理整个编译过程基础设施（参见 http://clang.llvm.org/doxygen/classclang_1_1CompilerInstance.html）。第一步实例化这个类，存为CI。
+2. 通常，clang -cc1会实例化一个具体的FrontendAction，它执行这里介绍的所有步骤。因为我们想向你暴露这些步骤，所有不使用FrontendAction；作为替代，我们将自己配置CompilerInstance。我们利用一个CompilerInstance方法创建诊断引擎，从系统获得一个目标三元组，作为当前的目标。
+3. 现在我们实例化三个新的资源：一个文件管理器，一个源代码管理器，一个预处理器。第一个是读源文件所必需的，第二个负责管理SourceLocation实例，为词法器和解析器所用。
+4. 我们创建一个ASTConsumer引用，传给CI。这让前端客户能够以其自己的方式接收最终的AST（在解析和语义分析之后）。例如，如果我们想让驱动器生成LLVM IR代码，就需要提供一个具体的代码生成ASTConsumer实例（称为BackendConsumer），这正好是CodeGenAction设置它的CompilerInstance的ASTConsumer的方式。在此例中，我们包含了头文件ASTConsumers.h，它为我们提供了各式各样的用作实验consumer（接收者），而我们用了一个仅仅打印AST到控制台的consumer。我们借助CreateASTPrinter()调用创建了它。如果你感兴趣，就花点时间实现你自己的ASTConsumer子类，执行任何你感兴趣的前端分析（从阅读lib/Frontend/ASTConsumers.cpp开始，它有一些实现的例子）。
+5. 我们创建一个新的ASTContext和Sema，分别为解析器和语义分析器所用，把它们推送给CI对象。我们还初始化了诊断consumer（这里，我们的标准consumer也仅仅打印诊断到屏幕）。
+6. 我们调用ParseAST以执行词法和语法分析，它们会接着借助HandleTranslationUnit函数调用，去调用我们的ASTConsumer。Clang也会打印诊断并中断流水线，如果在任何前端阶段发现一个严重的错误。
+7. 打印AST统计信息到标准输出。
 
 　　让我们用下面的文件测试这个简单的前端工具：
 
