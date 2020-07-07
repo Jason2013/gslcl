@@ -1,0 +1,959 @@
+第10章 Clang工具和LibTooling
+####################################
+
+在这一章，我们将看到有多少工具以库的形式利用Clang前端，为了不同的目的而操作C/C++程序。特别地，它们都依赖LibTooling，一个Clang库，它使人们可以编写独立的工具。在这种情况下，你可以设计一个完全属于你自己的工具，利用Clang的解析能力，让你的用户可以直接调用你的工具，而不是编写一个插件以适应Clang编译管线。这一章所展示的工具可以在Clang额外工具包中找到；参考第2章（外部项目）获得如何安装它们的信息。我们将以一个可用的例子结束这一章，演示如何创建你自己的代码重构工具。我们将讨论以下话题：
+
+•	生成编译命令database
+•	理解并使用若干Clang工具，它们依赖LibTooling，例如Clang Tidy、Clang Modernizer、Clang Apply Replacements、ClangFormat、Modularize、PPTrace、和Clang Query
+•	建造你自己的基于LibTooling的代码重构工具
+
+生成编译命令database
+*************************************
+
+一般来说，编译器被build脚本调用，例如Makefile，用一系列参数配置它，使之恰当地使用项目头文件和定义。这些参数让前端能够正确地分词和解析输入的源代码文件。然而，在这一章，我们将学习独立工具，它们将独立运行，而不是作为Clang编译管线的一部分。因此，理论上，我们会需要一个具体的脚本，以正确的参数对每个源代码文件运行我们的工具。举例来说，下面的命令显示了Make所用的完整的命令行，它调用编译器以build来自LLVM库的一个典型的文件：
+
+.. code-block :: bash
+
+    $ /usr/bin/c++ -DNDEBUG -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS
+    -D__STDC_LIMIT_MACROS -fPIC -fvisibility-inlines-hidden -Wall -W -Wnounused-
+    parameter -Wwrite-strings -Wmissing-field-initializers -pedantic
+    -Wno-long-long -Wcovered-switch-default -Wnon-virtual-dtor -fno-rtti
+    -I/Users/user/p/llvm/llvm-3.4/cmake-scripts/utils/TableGen -I/Users/
+    user/p/llvm/llvm-3.4/llvm/utils/TableGen -I/Users/user/p/llvm/llvm-3.4/
+    cmake-scripts/include -I/Users/user/p/llvm/llvm-3.4/llvm/include -fnoexceptions
+    -o CMakeFiles/llvm-tblgen.dir/DAGISelMatcher.cpp.o -c /Users/
+    user/p/llvm/llvm-3.4/llvm/utils/TableGen/DAGISelMatcher.cpp
+
+当你在使用这个库，你会相当不开心，如果你不得不输入如此长的命令，它占据终端10行，以分析每个源代码文件，不能丢弃一个字符，因为前端将使用此信息的全部。
+
+为了让工具易于处理源代码文件，任意使用LibTooling的项目都接受命令database作为输入。这个命令database为一个具体项目的每个源文件设置正确的编译器参数。为了让事情变得更容易，如果以-DCMAKE_EXPORT_COMPILE_COMMANDS参数调用CMake，它就会为你生成这个database文件。举例来说，假设你期望对来自Apache项目的一个具体源代码文件运行基于LibTooling的工具。为了让你无需输入准确的编译器参数以正确地解析这个文件，你可以用CMake生成一个命令database，如下所示：
+
+.. code-block :: bash
+
+    $ cd httpd-2.4.9
+    $ mkdir obj
+    $ cd obj
+    $ cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON ../
+    $ ln -s $(pwd)/compile_commands.json ../
+
+这和你用CMake build Apache所用的build命令类似，但是并不实际build它，-DCMAKE_EXPORT_COMPILE_COMMANDS=ON参数指示CMake用编译器参数生成一个JSON文件，它将会用这些参数去编译每个Apache源文件。我们需要创建一个链接到这个JSON文件，让它出现在Apache源代码的根目录中。然后，当我们运行任何LibTooling程序去解析一个Apache源文件的时候，它将搜索父目录直到在其中找到compile_commands.json，以得到恰当的参数去解析这个文件。
+
+可选地，如果你不想在运行你的工具之前build编译命令database，你可以用双短线（--）直接传递编译器命令，你将会用它处理这个文件。当你的项目不需要很多参数来编译时，这是有用的。举例来说，看下面的命令行：
+
+.. code-block :: bash
+
+    $ my_libtooling_tool test.c -- -Iyour_include_dir -Dyour_define
+
+clang-tidy工具
+*****************************************
+
+在这小节，我们将介绍clang-tidy，作为LibTooling工具的一个例子，解释如何使用它。所有其它Clang工具具有类似的样子和感觉，从而让你能够愉快地探索它们。
+
+clang-tidy是一个linter，基于Clang。一般来说，linter是一种分析代码的工具，它暴露不符合最优形式的代码。它可以检查具体的特征，例如：
+
+•	代码是否适应不同的编译器
+•	代码是否遵循特定的习语或编码惯例
+•	代码是否可能由于滥用语言特性而导致漏洞
+
+就clang-tidy的具体情况而言，这个工具能够运行两种类型的检测器：来自原始的Clang静态分析器的检查器和专门为clang-tidy编写的检查器。尽管能够运行静态分析器检查，注意clang-tidy和其它基于LibTooling的工具是基于源代码分析的，这和前面章节描述的复杂的静态分析引擎是相当不同的。这些检查只是遍历Clang AST，而不是模拟程序运行，它们也快得多。不同于Clang静态分析器的检查，为clang-tidy编写的检查一般以检查是否符合特定的编码惯例为目标。特别地，它们检查LLVM编码惯例和Google编码惯例，还有其它一般的检查。
+
+如果你遵循特定的编码惯例，你会发现clang-tidy非常有用，用它定期地检查你的代码。花点工夫，你甚至可以配置它，让它从一些文本编辑器里直接运行。但是，目前这个工具还未成熟，只实现了少量测试。
+
+利用clang-tidy检查你的代码
+==========================================
+
+在此例中，我们将演示如何用clang-tidy检查我们在第9章（Clang静态分析器）写的代码。我们为静态分析器写了一个插件，如果我们想把这个检查器提交到官方的Clang源代码树，我们需要严格地遵循LLVM编码惯例。是时候检查我们是否真的遵循它了。一般的clang-tidy命令行接口如下：
+
+.. code-block :: bash
+
+    $ clang-tidy [options] <source0> [... <sourceN>] [-- <compiler command>]
+
+你可以小心地通过-checks参数中的名字激活每个检查器，但是你也可以利用通配符*选择许多具有相同开始子字符串的检查器。当你需要关闭一个检查器，就用带短划线前缀的检查器名字。举例来说，如果你想运行所有属于LLVM编码惯例的检查器，就应该用下面的命令：
+
+.. code-block :: bash
+
+    $ clang-tidy -checks="llvm-*" file.cpp
+
+.. note ::
+
+    只有安装了Clang连同Clang额外工具代码仓库，所有本章中描述的工具才能运行，后者跟Clang树是分开的。如果你还没有安装clang-tidy，请阅读第2章（外部项目），了解如何编译并安装Clang外部工具。
+
+因为我们的代码是和Clang一起编译的，我们需要一个编译器database。我们将开始生成它。进入你的LLVM源代码所在的文件夹，用下面的命令创建一个兄弟文件夹以存放CMake文件：
+
+.. code-block :: bash
+
+    $ mkdir cmake-scripts
+    $ cd cmake-scripts
+    $ cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON ../llvm
+
+.. note ::
+
+    如果你遇到一个unknown-source-file的错误，指向前一章所创建的检查器的代码，你需要以你的检查器源文件的名字更新CMakeLists.txt文件。用下面的命令行编辑这个文件，然后再次运行CMake：
+
+.. code-block :: bash
+
+    $ vim ../llvm/tools/clang/lib/StaticAnalyzer/Checkers/CMakeLists.txt
+
+然后，在LLVM根文件夹中创建一个链接，指向编译器命令database文件。
+
+.. code-block :: bash
+
+    $ ln -s $(pwd)/compile_commands.json ../llvm
+
+现在，我们终于可以运行clang-tidy了：
+
+.. code-block :: bash
+
+    $ cd ../llvm/tools/clang/lib/StaticAnalyzer/Checkers
+    $ clang-tidy -checks="llvm-*" ReactorChecker.cpp
+
+你应该看到许多关于我们的检查器所包含的头文件的抱怨，它们没有严格地遵循LLVM规则，它要求每个namespace结尾的大括号有注释（见http://llvm.org/docs/CodingStandards.html#namespace-indentation）。好消息是，我们工具的代码，包括头文件，没有违反这些规则。
+
+重构工具
+************************************************
+
+在这一小节，我们将介绍许多其它的工具，它们利用Clang的解析能力，执行代码分析和源到源的转换。以一种类似clang-tidy的方式使用它们，依靠你的命令database来简化用法，这会让你感到舒服。
+
+Clang Modernizer
+================================================
+
+Clang Modernizer是一个革命性的独立工具，它帮助人们改写陈旧的C++代码以使用最新的标准，例如，C++11。它通过执行下面的变换以达到这个目标：
+
+•	循环转变变换：将陈旧的C-风格的for(;;)循环转变为更新的基于范围的for(auto Y...:..)形式的循环
+•	使用nullptr变换：将陈旧的C-风格的表示空指针的NULL或常数0转变为更新的nullptr C++11关键字
+•	使用auto变换：将一些类型声明在特定的情况下转变为使用auto关键字，这提高了代码可读性
+•	添加override变换：为重写基类函数的虚拟成员函数声明添加override修饰
+•	值转递变换：用值传递成语替换被复制的const引用
+•	替换auto_ptr变换：用std::unique_ptr替换已过时的std::auto_ptr
+
+源到源的变换工具利用了Clang LibTooling基础设施，Clang Modernizer是其中的一个引人入胜的例子。要想使用它，观察下面的模板：
+
+.. code-block :: bash
+
+    $ clang-modernize [<options>] <source0> [... <sourceN>] [-- <compiler command>]
+
+注意，如果你不提供任何额外的选项，除了源代码文件名，这个工具就会直接对源文件付诸全部变换。用参数-serialize-replacements强制将提议的补丁写到磁盘，这让你能够先阅读它们，再应用它们。有特别的工具可以应用在磁盘上的补丁，我们将在后面介绍它们。
+
+Clang Apply Replacements
+=================================================
+
+Clang Modernizer（之前的C++迁移器）的开发引发了讨论，关于如何协调对大型代码库的源到源的变换。例如，当分析不同的翻译单元时，同一个头文件可能被分析多次。
+
+处理这个问题的一个可选方法是，序列化替换提议，将它们写到文件。第二个工具将负责读入这些提议的文件，丢弃冲突的和重复的提议，并对源文件应用这些替换提议。这是Clang Apply Replacements的目的，它生来就是用于帮助Clang Modernizer修正大型的代码库的。
+
+Clang Modernizer和Clang Apply Replacements，前者产生替换提议，后者实施这些提议，它们都会利用clang::tooling::Replacement类的一个序列化版本。此序列化用到了YAML格式，它可以被定义为JSON的超集，易于人们阅读。
+
+代码版本工具所用的补丁文件，正好是一种修改提议的序列化格式，但是Clang开发者选择使用YAML，直接利用Replacement类的序列化，避免解析补丁文件。
+
+因此，Clang Apply Replacements工具不打算成为一个通用的代码补丁工具，而是一个专用的工具，致力于处理依赖于工具化API的Clang工具所作出的修改。注意，如果你在编写一个源到源的变换工具，只有当你希望协调多个修改提议以消除重复修改时，才需要使用Clang Apply Replacements工具。否则，你就直接简单地修改源文件。
+
+为了看清Clang Apply Replacements如何工作，我们首先需要使用Clang Modernizer，强制它序列化它的修改提议。假设我们想要转换下面的C++源文件，让它使用新的C++标准：
+
+.. code-block :: c
+
+    int main() {
+    const int size = 5;
+    int arr[] = {1,2,3,4,5};
+    for (int i = 0; i < size; ++i) {
+    arr[i] += 5;
+    }
+    return 0;
+    }
+
+根据Clang Modernizer的用户手册，转换这个循环让它使用新的auto迭代器是安全的。为此，我们需要使用Clang Modernizer的循环转换：
+
+.. code-block :: bash
+
+    $ clang-modernize -loop-convert -serialize-replacements test.cpp
+    --serialize-dir=./
+
+最后一个参数是可选的，它指定当前文件夹将用于存放替换文件。如果我们不指定它，这个工具会创建一个临时文件夹，让Clang Apply Replacements以后使用。由于我们将所有替换文件输出到当前文件夹，你可以直接分析生成的YAML文件。付诸实践，简单地运行clang-apply-replacements，以当前文件夹作为它唯一的参数：
+
+.. code-block :: bash
+
+    $ clang-apply-replacements ./
+
+.. note ::
+
+    运行这个命令之后，如果你得到这样的错误信息：”trouble iterating over directory ./: too many levels of symbolic links”，你可以通过使用/tmp作为存储替换文件的文件夹，重试最后两个命令。或者，你可以创建一个新的文件夹以存放这些文件，让你易于分析它们。
+
+不止于这个简单的例子，这些工具通常被设计成用于处理大型代码库。因此，Clang Apply Replacements不会问任何问题，只是直接开始解析所指定文件夹中存在的所有YAML文件，分析并实行转换。
+
+你甚至可以指定具体的编码标准，要求这个工具在编写新代码到源文件（打补丁）的时候必须遵从。这就是参数-style=<LLVM|Google|Chromium|Mozilla|Webkit>的目的。这项功能是LibFormat库提供的便利，它让任意重构工具能够以某种具体的格式或编码惯例编写新代码。我们将在下一小节给出关于这个著名的特性的更多细节。
+
+ClangFormat
+==================================================
+
+想象你是一项竞赛的评审员，类似于国际模糊C代码竞赛（IOCCC: International Obfuscated C Code Contest）。为了给你一种竞赛的感觉，我们将再次产生22期胜者之一Michael Birken的代码。记住，这份代码在Creative Commons
+
+Attribution-ShareAlike 3.0许可证下获得许可，这意味着你可以任意地修改它，只要你保留此许可证，并把荣誉归于IOCCC。
+
+.. figure :: ch10/ch10_clang_format_1.png
+   :align: center
+
+免得你想问，这是正确的代码吗？告诉你，是的。访问http://www.ioccc.org/2013/birken可下载它。现在，让我们演示ClangFormat会怎么处理此代码。
+
+.. code-block :: bash
+
+    $ clang-format -style=llvm obf.c --
+
+下面的截屏显示了结果：
+
+.. figure :: ch10/ch10_clang_format_2.png
+   :align: center
+
+变好了，对吗？在实际中，你将幸运地不需要检查模糊不清的代码，但是调整格式以遵循特别的编码惯例不是人类特别梦想的工作。这就是ClangFormat的目的。它不只是一个工具，还是一个库，LibFormat，它格式化代码以适应某种编码惯例。这样，如果你新建的工具恰好会生成C或C++代码，你可以专注于你的项目，而把格式的事情留给ClangFormat。
+
+除了展开这个明显人为的例子，执行代码缩进，ClangFormat是一个巧妙的工具，它被细心地开发出来以最好地格式化代码，将代码调整为80行格式，并提高其可读性。如果你曾经停留于考虑如何最好地分解一个长句，你会感激ClangFormat是多么善于处理这样的任务。尝试在你最喜欢的编辑器中将它设置为一个外部工具，配置一个启动它的热键。如果你在使用著名的编辑器，例如Vim或者Emacs，请确认有人已经写了定制的脚本来集成ClangFormat。
+
+代码格式化、组织和澄清等话题，还引出了C和C++代码令人讨厌的问题：滥用头文件，以及怎么协调它们。下一节将专注于讨论针对此问题的在进行中的方案，以及Clang工具怎么帮助你采用此新方法。
+
+Modularize
+=====================================================
+
+为了理解Modularize项目的目标，我们首先需要介绍C++中的模块概念，这是偏离本章主题的闲谈。在写作此文的时候，模块还没有正式地标准化。对于Clang怎么为C/C++项目实现新想法不感兴趣的读者，鼓励你跳过这个小节，跳到下一个工具。
+
+理解C/C++ API的定义
+-----------------------------------------------------
+
+目前，C和C++程序被分成头文件，例如扩展名为.h的文件，和实现文件，例如扩展名为.c或者.cpp的文件。编译器把每个实现文件和包含文件的结合诠释为单独的翻译单元。
+
+当以C或C++编程的时候，如果你在一个特定的实现文件上工作，你需要考虑哪些实体属于局部作用域，哪些属于全局作用域。例如，不被不同实现文件共享的函数和数据，在C中应该以关键字static声明，或者在C++中声明在匿名namespace中。这告诉链接器这个翻译单元不暴露局部实体，因而其它单元无法使用它们。
+
+然而，如果你不想在不同翻译单元之间共享实体，会出现问题。为了清楚起见，让我们将导出实体的翻译单元称为exporter，将使用这些实体的翻译单元称为importer。我们还假设，一个名为gamelogic.c的exporter想要向名为screen.c的importer导出一个简单的整数变量，名为num_lives。
+
+链接器职责
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+首先，我们将介绍在我们的例子中链接器如何处理符号导入。在编译并汇编gamelogic.c之后，我们将得到一个名为gamelogic.o的目标文件，它的符号表显示，符号num_lives占用4个字节，其它翻译单元可以使用它。
+
+.. code-block :: bash
+
+    $ gcc -c gamelogic.c -o gamelogic.o
+    $ readelf -s gamelogic.o
+
+======== ============ ============ ============ ============ ============ ============ ============
+ Num      Value        Size         Type         Bind         Vis          Index        Name
+======== ============ ============ ============ ============ ============ ============ ============
+ 7        00000000     4            OBJECT       GLOBAL       DEFAULT      3            num_lives
+======== ============ ============ ============ ============ ============ ============ ============
+
+这个表只显示了我们关注的符号，省略了其它符号。readelf工具仅在Linux平台上可用，它依赖ELF，被广泛采用的Executable and Linkable Format。如果你使用其它平台，可以用objdump -t打印符号表。我们这样理解这个表：在表中符号num_lives被分配为第7个位置，占用相对于索引为3的段（.bss段）的首地址（零）.反过来，.bss段持有数据实体，它被初始化为零。为了验证段名和其索引的对应关系，用readelf -S或者objdump -h打印段的头信息。从这个表，我们还知道，符号num_lives是一个（数据）object，包含4个字节，是全局可见的（global bind）。
+
+类似地，screen.o文件的符号表会显示这个翻译单元依赖符号num_lives，它属于另一个翻译单元。要想分析screen.o，可用之前用在gamelogic.o上的相同命令：
+
+.. code-block :: bash
+
+    $ gcc -c screen.c -o screen.o
+    $ readelf -s screen.o
+
+======== ============ ============ ============ ============ ============ ============ ============
+ Num	  Value        Size         Type         Bind         Vis          Index        Name 
+======== ============ ============ ============ ============ ============ ============ ============
+ 10       00000000     0            NOTYPE       GLOBAL       DEFAULT      UND          num_lives 
+======== ============ ============ ============ ============ ============ ============ ============
+
+这个表项类似于exporter中的那个，只是它的信息少。它没有size和type，显示哪个ELF段包含这个符号的index被标记为UND（未定义），这标志这个翻译单元是importer。如果这个翻译单元被选择编入最终的程序，链接必须解决这个依赖关系，否则就不成功。
+
+链接器收到这两个文件作为输入，用importer请求的符号的地址对importer打补丁，这个符号在exporter中。
+
+.. code-block :: bash
+
+    $ gcc screen.o gamelogic.o -o game
+    $ readelf -s game
+
+======== ============ ============ ============ ============ ============ ============ ============
+ Num      Value        Size         Type         Bind         Vis          Index        Name
+======== ============ ============ ============ ============ ============ ============ ============
+ 60       0804a01c     4            OBJECT       GLOBAL       DEFAULT      25           num_lives
+======== ============ ============ ============ ============ ============ ============ ============
+
+现在，这个值反映了程序被加载时变量的完整虚拟内存地址，向importer的代码段提供了符号的位置，完成了不同翻译单元之间的导出-导入协议。
+
+我们得出结论，在链接器这边，在多个翻译单元之间共享实体是简单而高效的。
+
+前端对应部分
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+处理目标文件是简单的，但是这并不反映在语言中。不同于链接器，在导入的实现中，编译器不能只根据导入实体的名字，因为它需要验证这个翻译单元的语义没有违反语言的类型系统，即它需要知道num_lives是一个整数。因此，编译器期望得到导入实体的名字连同类型信息。回顾历史可知，C通过引入头文件解决这个问题。
+
+头文件包含实体的名字连同类型信息，它们被不同的翻译单元使用。在这个模型中，导入者用include指令加载它将导入的实体的类型信息。然而，头文件的用法不止于此，事实上，它还可以带入任意的C或C++代码，不只是声明。
+
+依赖C/C++预处理器的问题
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+和如Java中的语言指令import不同，Include指令的语义不要求为编译器提供导入符号的必要信息，而是展开成更多需要被解析的C或C++代码。这个机制由预处理器实现，它不加思考地在实际编译前复制并修补代码，相当于一个文本处理工具。
+
+代码量的膨胀在C++代码中更复杂，C++模板鼓励在头文件中实现完整的类，它之后变成大量额外的C++代码被注入到所有使用头文件的导入者中。
+
+这使得C或C++项目的编译增加沉重的负担，因为它们依赖于很多库（或者外部定义的实体），编译器需要多次解析很多头文件，为每个编译单元解析它所用到的头文件一次。
+
+.. note ::
+
+    回顾历史，实体的导入和导出，曾经可以由扩展的符号表解决，如今需要仔细地解析人类编写的成千上万行代码。
+
+大型的编译器项目往往用一个预编译头文件方法来避免重复词法解析每个头文件，例如，Clang的PCH文件。然而，这仅仅缓解了问题，因为编译仍然需要重新解释整个头文件，鉴于可能存在新的宏定义，这影响当前翻译单元如何解释这个头文件。
+
+举例来说，假设我们的游戏以下面的方式实现gamelogic.h：
+
+.. code-block :: c
+
+    #ifdef PLATFORM_A
+    extern uint32_t num_lives;
+    #else
+    extern uint16_t num_lives;
+    #endif
+
+当screen.c包含这个文件时，导入的实体num_lives的类型依赖于是否在翻译单元screen.c的上下文中定义了宏PLATFORM_A。而且，对于另一个翻译单元，这个上下文不是必须相同的。这强制编译器加载头文件的额外的代码，每当不同的翻译单元包含头文件时。
+
+为了控制C/C++导入以及如何编写库接口，模块提c出一个描述此接口的新的方法，它是讨论中的标准的一部分。此外，Clang已经在实现对模块的支持了。
+
+理解模块的工作方式
+-------------------------------------------------
+
+你的翻译单元可以导入一个模块，它定义一个清晰无歧义的接口以使用一个具体的库，而不是包含头文件。import指令会加载由一个给定的库导出的实体，无需向你的翻译单元注入额外的C或C++代码。
+
+然而，目前没有已定义的导入语法，C++标准委员会还在讨论此特性。目前，Clang提供了一个额外的标记，称为-fmodules，它直接将include解释为模块的import指令，当你包含一个属于模块化的库的头文件的时候。
+
+当解析属于模块的头文件时，Clang会生成一个它自己的实例，它的预处理器状态是干净的，以此编译这些头文件，并把结果以二进制形式保存为高速缓存，以加速后续翻译单元的编译，它们依赖于相同的头文件，此头文件定义了一个特定的模块。因此，这些已成为模块一部分的头文件，不可依赖于先前定义的宏，或者其它预处理器先前的状态。
+
+使用模块
+-------------------------------------------------
+
+为了将一组头文件映射为一个具体的模块，可以定义一个单独的文件，称为module.modulemap，它提供此信息。这个文件被放置的目录，应该和定义库的API的头文件的目录相同。如果这个文件存在，并且以-fmodules调用Clang，编译就会使用模块。
+
+让我们扩展简单游戏例子以使用模块。假设游戏API是由两个头文件定义的，gamelogic.h和screenlogic.h。主文件game.c从这两个文件导入实体。游戏API源代码的内容如下：
+
+•	gamelogic.h文件的内容：
+        extern int num_lives;
+•	screenlogic.h文件的内容：
+        extern int num_lines;
+•	gamelogic.c文件的内容：
+        int num_lives = 3;
+•	screenlogic.c文件的内容：
+        int num_lines = 24;
+
+还有，在我们的游戏API中，每当用户包含gamelogic.h头文件时，他也会想要包含screenlogic.h以在屏幕上打印游戏数据。从而，我们将结构化我们的逻辑模块以表达这种依赖。因此，项目的module.modulemap文件定义如下：
+
+.. code-block :: c
+
+    module MyGameLib {
+        explicit module ScreenLogic {
+        header "screenlogic.h"
+      }
+      explicit module GameLogic {
+        header "gamelogic.h"
+        export ScreenLogic
+      }
+    }
+
+关键字module后面跟着名字，你期望用这个名字识别它。在我们的例子中，我们命名它为MyGameLib。每个模块可以有一列封闭的子模块。关键字explicit用来告诉Clang，这个子模块被导入仅当其中一个它的头文件被显式地包含。你可以列出很多头文件来表示单个子模块，但是这里我们的每个子模块只用到一个头文件。
+
+由于我们在用模块，我们可以利用它们让事情变得更简单，让include指令更简单。注意，在GameLogic子模块的作用域，通过在ScreenLogic子模块的名字后面使用export关键字，我们声明，每当用户导入GameLogic子模块时，我们也让ScreenLogic的符号可见。
+
+为了说明上述内容，我们会编写game.c，即这个API的用户，如下
+
+.. code-block :: c
+
+    // File: game.c
+    #include "gamelogic.h"
+    #include <stdio.h>
+    int main() {
+      printf("lives= %d\nlines=%d\n", num_lives, num_lines);
+      return 0;
+    }
+
+注意，我们用到了在gamelogic.h中定义的num_lives，和在screenlogic.h中定义的num_lines，它们不是显式包含的。然而，当clang以-fmodules参数解析这个文件时，它会转换第一个include指令，达到import GameLogic子模块的效果，这促使在ScreenLogic中定义的符号可见。因此，下面的命令可以正确地编译这个项目：
+
+.. code-block :: bash
+
+    $ clang -fmodules game.c gamelogic.c screenlogic.c -o game
+
+另一方面，调用无模块系统的Clang将导致报告缺失符号定义：
+
+.. code-block :: bash
+
+    $ clang game.c gamelogic.c screenlogic.c -o game
+    screen.c:4:50: error: use of undeclared identifier 'num_lines'; did you
+    mean 'num_lives'?
+    printf("lives= %d\nlines=%d\n", num_lives, num_lines);
+    ^~~~~~~~~
+    num_lives
+
+然而，记住你希望你的项目尽可能地可移植，因此避免如下情况是令人感兴趣的，即支持模块时能正确编译，不支持时则不能。最适合采用模块的场景，是为简化库API的使用，和加速依赖很多公共头文件的翻译单元的编译。
+
+理解Modularize
+-----------------------------------------------
+
+一个好的示例，是改编一个已有的大型项目，让它使用模块而不是包含头文件。记住，在模块框架中，附属每个子模块的头文件是独立编译的。例如，很多项目依赖于这样的宏，它们在包含指令之前的其它文件中被定义，大概不能移植为使用模块。
+
+modularize的目的就是帮助你完成此任务。它分析一系列头文件，报告它们是否具有重复的变量定义、宏定义，或者如此宏定义，它们可能评估为不同的结果，依赖于预处理器的状态。它帮助你诊断常见的障碍，以根据一系列头文件创建模块。它还检测项目是否在名字空间区域中使用include指令，这也会强制编译器在不同的作用域中解释包含的文件，此作用域和模块的概念不兼容。如此，在头文件中定义的符号必须不依赖于头文件被包含处的上下文。
+
+使用Modularize
+-----------------------------------------------
+
+要使用modularize，你必须提供一个头文件的列表，它们将被逐个比较检查。继续我们的游戏项目的例子，我们会写一个新的文本文件，称为list.txt，如下：
+
+  gamelogic.h
+
+  screenlogic.h
+
+然后，简单地运行modularize，以这个列表为参数：
+
+.. code-block :: bash
+
+    $ modularize list.txt
+
+如果你改变其中一个头文件，定义相同的符号，modularize会报告存在不安全的模块行为，在为你的项目写入module.modulemap文件之前，你应该修正头文件。在修正头文件时，记住每个头文件应该尽可能地独立，它不应该修改它定义的符号，依赖于包含头文件的文件所定义的值。如果依赖于这种行为，你应该将这个头文件分成两个或更多，每个定义编译看到的符号，当使用一组特定的宏时。
+
+模块映射检查器
+-----------------------------------------------
+
+Clang工具模块映射检查器检查module.modulemap文件，确保它涵盖了一个目录中的所有头文件。对于前面小节的例子，用下面的命令调用它：
+
+.. code-block :: bash
+
+    $ module-map-checker module.modulemap
+
+我们讨论了使用include指令对比模块，预处理器是其中的症结。在下一节，我们会推介一个工具，它帮助你跟踪这个独特的前端组件的活动。
+
+PPTrace
+================================================
+
+请看下面的引文，它来自关于clang::preprocessor的Clang文档，在http://clang.llvm.org/doxygen/classclang_1_1Preprocessor.html：
+
+    *Engages in a tight little dance with the lexer to efficiently preprocess tokens.（与词法分析器紧密协作以高效地预处理标记。）*
+
+如第4章前端已经指出的那样，Clang中的lexer类执行源代码文件分析的第一步。它将大块的文本识别成词汇，之后由解析器作解释。lexer没有语义的信息，语义分析是解析器的责任，也不关心包含的头文件和宏展开，这是预处理器的责任。
+
+Clang的pp-trace独立工具输出预处理过程的踪迹。它实现此功能的方法是实现clang::PPCallbacks接口的回调函数。它首先将自己注册为预处理器的观察员，然后启动Clang以分析输入文件。对于预处理器的每个动作，例如解释#if指令，导入模块，包含头文件，等等，这个工具会在屏幕上打印消息。
+
+考虑下面的特意编写的"hello world"C程序：
+
+.. code-block :: c
+
+    #if 0
+    #include <stdio.h>
+    #endif
+    #ifdef CAPITALIZE
+    #define WORLD "WORLD"
+    #else
+    #define WORLD "world"
+    #endif
+    extern int write(int, const char*, unsigned long);
+    int main() {
+      write(1, "Hello, ", 7);
+      write(1, WORLD, 5);
+      write(1, "!\n", 2);
+      return 0;
+    }
+
+在前面的代码的第一行，我们用了预处理指令#if，它总是取值为假，强制编译器忽略源代码块的内容，直到下一个#endif指令。接着，我们用#ifdef指令检查是否定义了CAPITALIZE宏。根据是否定义了这个宏，宏WORD会被定义为大写的WORD字符串，或者小写的word字符串。最后，代码调用了一系列write系统调用，以在屏幕上输出消息。
+
+运行pp-trace，就像我们运行其它类似的Clang源代码分析独立工具：
+
+.. code-block :: bash
+
+    $ pp-trace hello.c
+
+结果是一系列关于宏定义的预处理器事件，发生在实际的源代码被处理之前。最后的事件涉及上述具体文件，如下：
+
+.. code-block :: bash
+
+    - Callback: If
+    Loc: "hello.c:1:2"
+    ConditionRange: ["hello.c:1:4", "hello.c:2:1"]
+    ConditionValue: CVK_False
+    - Callback: Endif
+    Loc: "hello.c:3:2"
+    IfLoc: "hello.c:1:2"
+    - Callback: SourceRangeSkipped
+    Range: ["hello.c:1:2", "hello.c:3:2"]
+    - Callback: Ifdef
+    Loc: "hello.c:5:2"
+    MacroNameTok: CAPITALIZE
+    MacroDirective: (null)
+    - Callback: Else
+    Loc: "hello.c:7:2"
+    IfLoc: "hello.c:5:2"
+    - Callback: SourceRangeSkipped
+    Range: ["hello.c:5:2", "hello.c:7:2"]
+    - Callback: MacroDefined
+    MacroNameTok: WORLD
+    MacroDirective: MD_Define
+    - Callback: Endif
+    Loc: "hello.c:9:2"
+    IfLoc: "hello.c:5:2"
+    - Callback: MacroExpands
+    MacroNameTok: WORLD
+    MacroDirective: MD_Define
+    Range: ["hello.c:13:14", "hello.c:13:14"]
+    Args: (null)
+    - Callback: EndOfMainFile
+
+第一个事件涉及我们的第一个#if预处理器指令。这个区域触发了三次回调：If，Endf，和SourceRangeSkipped。注意到里面的#include指令是不处理的，它被跳过了。类似地，我们看到宏WORD相关的事件：IfDef，Else，MacroDefined，和Endif。最后，pp-trace通过MacroExpands事件报告我们用到了宏WORD，然后到达了文件末尾，调用了回到函数EndOfMainFile。
+
+预处理之后，前端的下一步是词法分析和解析。在下一节，我们介绍一个工具，它研究解析器的结果，即AST节点。
+
+Clang Query
+===============================================
+
+Clang Query工具是在LLVM 3.5中引入的，它能够读入一个源文件，交互地查询它所关联的Clang AST节点。这是一个很好的工具，帮助我们查看并学习前端如何表达每行代码。然而，它的主要目标，让你不但能够查看程序的AST，而且能够测试AST匹配器。
+
+当编写一个重构工具时，你会对使用AST匹配器库感兴趣，它包含若干断言，它们匹配你所感兴趣的Clang AST片段。Clang Query工具可以在开发的这个部分帮助你，因为它让你能够查看哪个AST节点匹配一个具体的AST匹配器。你可以在ASTMatchers.h中查看可用的AST匹配器的列表，但是你也可以用驼峰大小写的名字，猜测表示你所感兴趣的AST节点的类。例如，functionDecl会匹配所有FunctionDecl节点，它们表示函数声明。在你试验了哪个匹配器确切地返回你所感兴趣的节点之后，你可以在你的重构工具中用它们实现一个自动转换的方法，为了某个特定的目的。在本章的后面，我们会解释如何使用AST匹配器库。
+
+作为一个查看AST的例子，我们会对上次PPTrace中用到的“hello world”代码运行clang-query。Clang Query期望你有一个编译命令database。如果你在查看一个文件，它没有编译命令database，就在双短划线之后给出编译命令，或者空着它，如果不需要特别的编译器选项，如下面的命令行所示：
+
+.. code-block :: bash
+
+    $ clang-query hello.c --
+
+发出这个命令之后，clang-query会显示一个交互提示，等待你输入命令。你可以输入match命令和任意AST匹配器的名字。例如，在下面的命令中，我们让clang-query显示所有CallExpr节点：
+
+.. code-block :: bash
+
+    clang-query> match callExpr()
+    
+    Match #1:
+    hello.c:12:5: note: "root" node binds here
+    write(1, "Hello, ", 7);
+    ^~~~~~~~~~~~~~~~~~~~~~
+    ...
+
+这个工具会突出程序中一个确切的位置，它对应于关联CallExpr AST节点的第一个标记。Clang Query能够接受的命令列表如下：
+
+* help：打印命令列表。
+* match <matcher name>或m <matcher name>：这个命令以要求的匹配器遍历AST。
+* set output <(diag | print | dump)>：这个命令修改如何打印节点信息，一旦它被成功地匹配。第一个选项会打印一个Clang诊断消息，突出节点，这是默认选项。第二个选项会简单地打印匹配到的对应源代码的摘要，而最后的选项会调用类成员函数dump()，它具有相当精妙的调试功能，还会显示所有子节点。
+
+了解一个程序的Clang AST的结构的一个重要方法，是修改dump输出，匹配高层级节点。试一试：
+
+  lang-query> set output dump
+
+  clang-query> match functionDecl()
+
+它会显示某些类的所有实例，这些类制作了所有函数体的语句和表达式，这些函数来自你所打开的C源代码。另一方面，记住，这种完全的AST dump，利用Clang Check是更容易得到的，我们会在下一节会介绍它。Clang Query更适用于制作AST匹配器表达式和检查它们的结果。后面你会见证Clang Query如何是一个极其有用的工具，当它帮助我们制作我们的第一个代码重构工具的时候，那时我们会讲到如何产生更复杂的查询。
+
+Clang Check
+=====================================================
+
+Clang Check是一个非常基础的工具，它只有几百行代码，这让它易于学习。然而，它具备整个Clang的解析能力，因为它链接了LibTooling。
+
+Clang Check让你能够解析C/C++源代码文件，打印Clang AST，或者执行基础的检查。它还可以应用Clang给出的“fix it”修改建议，利用为Clang Modernizer建造的重写器设施。
+
+例如，假设你想要打印program.c的AST，你会输入下面的命令：
+
+.. code-block :: bash
+
+    $ clang-check program.c -ast-dump --
+
+注意，Clang Check遵从LibTooling读取源文件的方式，你可以用一个命令database文件，或者在双短划线（--）之后输入适当的参数。
+
+Clang Check是一个小工具，当编写你自己的工具时，将它当作一个例子来学习。在下一小节，我们将介绍另一个小工具，让你了解小的代码重构工具能做什么。
+
+去除c_str()调用
+======================================================
+
+remove-cstr-calls工具是一个简单的源到源转换工具的例子，也就是一个重构工具。它在工作时会识别冗余的对std::string对象的c_str()调用，并重写代码使得在特定情况下避免之。这种冗余的调用可能会出现，首先，当建造一个新的string对象时，通过另一个string对象的c_str()的结果，例如，std::string(myString.c_str())。这可以简化为直接使用string拷贝构造器，例如，str::string(myString)。其次，当建造LLVM的具体的StringRef和Twine类的实例时，根据string对象来建造。在此情况下，更优的是使用string对象本身，而不是其c_str()的结果，使用StringRef(myString)，而不是StringRef(myString.c_str())。
+
+这个工具可以完整地写在单个C++文件里，它是另一个优秀的易于学习的例子，演示如何使用LibTooling建造重构工具。这就是我们下一个话题的主题。
+
+编写你自己的工具
+******************************************************
+
+Clang项目为使用者提供了三种接口，以利用Clang的特性和它的解析能力，包括语法和语义分析。首先，libclang是和Clang交互的主要方式，它提供了稳定的C API，允许外部项目将它嵌入其中，获得对整个框架的高层级的访问。这个稳定的接口试图保持对旧版本的向后兼容，避免由于发布新版的libclang而破坏你的软件。从其它语言使用libclang也是可能的，例如，使用Clang Python绑定。Apple Xcode，举个例子，它通过libclang和Clang交互。
+
+其次，Clang插件，它允许你在编译过程中添加你自己的Pass，而不是由工具执行离线的分析，比如Clang静态分析器。当你每次编译一个翻译单元都要执行它时，这是有用的。因此，你需要考虑执行这种分析所需的时间，是否适合频繁地运行。另一方面，将你的分析集成到build系统是如此容易，就像给编译器命令增加选项。
+
+最后的方式是我们将要探索的，就是通过LibTooling利用Clang。这是一个令人激动的库，它让我们能够轻松地建造独立的工具，类似于本章中所介绍的，以代码重构或者语义检查为目标。和LibClang相比，LibTooling较少为了向后兼容而妥协，让你能够完全地访问Clang AST结构。
+
+问题定义-编写一个C++代码重构工具
+======================================================
+
+在本章的剩余部分，我们将介绍一个例子。假设你发起了一个虚构的创业项目，创立一种新的C++ IDE，称为IzzyC++。你的商业计划是吸引特定的用户，他们厌烦IDE不能自动地重构他们的代码。你将利用LibTooling制作一个简单而好用的C++代码重构工具；它接受如下参数，一个C++成员函数，它是完全限定的名字，和一个替换的名字。它的任务，就是找到这个成员函数的定义，将它修改为替换的名字，并且相应地修改所有对这个函数的调用。
+
+配置你的源代码的位置
+======================================================
+
+第一步是决定在何处存放你的工具的代码。在LLVM的源代码文件夹中，我们将新建一个文件夹，称为izzyrefactor，在tools/clang/tools/extra中，以存放我们项目的所有文件。之后，扩展extra文件夹中的Makefile，以包含你的项目。简单地，找到DIRS变量，并在其它Clang工具项目的旁边添加名字izzyrefactor。或许你还想编辑CMakeLists.txt文件，假如你使用CMake，添加新的一行：
+
+.. code-block :: bash
+
+    add_subdirectory(izzyrefactor)
+
+去到izzyrefactor文件夹，创建一个新的Makefile，以标记LLVM-build系统你要建造一个独立的工具，它会独立于其它二进制文件而存在。使用下面的内容：
+
+.. code-block :: bash
+
+    CLANG_LEVEL := ../../.. 
+    TOOLNAME = izzyrefactor 
+    TOOL_NO_EXPORTS = 1 
+    include $(CLANG_LEVEL)/../../Makefile.config 
+    LINK_COMPONENTS := $(TARGETS_TO_BUILD) asmparser bitreader support\
+                       mc option 
+    USEDLIBS = clangTooling.a clangFrontend.a clangSerialization.a \ 
+               clangDriver.a clangRewriteFrontend.a clangRewriteCore.a \ 
+               clangParse.a clangSema.a clangAnalysis.a clangAST.a \ 
+               clangASTMatchers.a clangEdit.a clangLex.a clangBasic.a
+    include $(CLANG_LEVEL)/Makefile
+
+这是一个重要的文件，它指定了所有需要和你的代码链接到一起的库，这样你才能建造这个工具。可选地，你可以添加一行NO_INSTALL = 1，就在设置TOOL_NO_EXPORTS这行之后，如果你不想你的新工具和其它LLVM工具那样被安装，当你运行make install的时候。
+
+我们设置TOOL_NO_EXPORTS = 1，因为你的工具不会使用任何插件，因此，它不需要导出符号，减小了最终程序的动态符号表的尺寸，这样也减少了动态链接并加载程序的时间。注意我们通过包含Clang总的Makefile完成了工作，它定义了编译这个项目所需的所有规则。
+
+如果你使用CMake而不是自动工具配置脚本，就创建一个新的CMakeLists.txt文件，写入如下内容：
+
+.. code-block :: bash
+
+    add_clang_executable(izzyrefactor 
+      IzzyRefactor.cpp 
+      ) 
+    target_link_libraries(izzyrefactor 
+         clangEdit clangTooling clangBasic clangAST clangASTMatchers)
+
+此外，如果你不想在Clang源代码树中build这个工具，你也可以将它build为一个独立的工具。只要使用第4章（前端）的末尾为驱动器工具介绍的同样的Makefile，作稍微修改。注意我们在前面的Makefile中用了哪些库，在USEDLIBS变量中，以及我们在第4章（前端）的Makefile中用了哪些库，在CLANGLIBS变量中。它们引用了相同的库，除了USEDLIBS有clangTooling，它包含LibTooling。因此，在第4章（前端）的Makefile中，在-lclang\这行之后，添加一行-lclangTooling\，就大功告成了。
+
+剖析工具样板代码
+===================================================
+
+你的所有代码会写在IzzyRefactor.cpp中。新建这个文件并开始添加初始的样板代码，如下所示：
+
+.. code-block :: cpp
+
+    int main(int argc, char **argv) {
+        cl::ParseCommandLineOptions(argc, argv);
+        string ErrorMessage;
+        OwningPtr<CompilationDatabase> Compilations (CompilationDatabase::loadFromDirectory(BuildPath, ErrorMessage));
+        if (!Compilations)
+            report_fatal_error(ErrorMessage);
+        // ...
+    }
+
+ 你的主要代码从ParseCommandLineOptions函数开始，它来自llvm::cl名字空间（command-line用途）。这个函数为你不厌其烦地解析argv中的每个选项 。
+
+.. note ::
+
+    典型地，基于LibTooling的工具会使用CommonOptionsParser对象，以轻松解析通用的选项，它们为所有重构工具所共用（参见http://clang.llvm.org/doxygen/classclang_1_1tooling_1_1CommonOptio nsParser.html作为一个代码示例）。在这个例子中，我们用低层级的ParseCommandLineOptions()函数来说明确切地我们打算解析哪些参数，并训练你在其它它们不使用LibTooling的工具中使用它。然而，自由地去使用CommonOptionsParser，让你的工作变得轻松（以不同的方式编写此工具, 作为练习）。
+
+你将证实，所有的LLVM工具都会使用cl名字 空间提供的功能（http://llvm.org/docs/doxygen/html/namespacellvm_1_1cl.html），定义我们的工具在命令行中识别哪些参数，实在是简单。为此，我们声明新的模板类型opt和list的变量：
+
+.. code-block :: bash
+
+    cl::opt<string> BuildPath( 
+      cl::Positional, 
+      cl::desc("<build-path>")); 
+    cl::list<string> SourcePaths( 
+      cl::Positional, 
+      cl::desc("<source0> [... <sourceN>]"), 
+      cl::OneOrMore); 
+    cl::opt<string> OriginalMethodName("method", 
+      cl::desc("Method name to replace"), 
+      cl::ValueRequired); 
+    cl::opt<string> ClassName("class", 
+      cl::desc("Name of the class that has this method"), 
+      cl::ValueRequired); 
+    cl::opt<string> NewMethodName("newname", 
+      cl::desc("New method name"), 
+      cl::ValueRequired);
+
+在定义main函数前声明这五个全局变量。我们具体化了类型opt，根据我们期望读取什么样的数据作为参数。例如，如果你需要读取一个数字，你会声明一个新的cl::opt<int>全局变量。
+
+为了读取这些参数的数值，你首先需要调用ParseCommandLineOptions。之后，你只需要引用关联变量的全局变量的名字，在你期望所关联的数据类型的代码处。例如，NewMethodName会给出使用者未这个参数提供的字符串，如果你的代码期望一个字符串的话，像std::out << NewMethodName。
+
+这是怎么工作的？opt_storage<>模板，就是opt<>的父类，定义了一个类，此类继承自它所管理的数据类型（此处为string）。通过继承，opt<string>变量也是可以被如此使用的字符串。如果opt<>类模板不能继承自被包裹的数据类型（例如，不存在int类），它会定义一个类型转换操作符，例如为int数据类型定义operator int()。在你的代码中，效果是一样的；当你引用一个cl::opt<int>变量时，它会自动地转换为一个整数，并返回它所存储的数字，就是使用者在命令行中提供的数字。
+
+我们还可以为参数指定不同的特征。在我们的例子中，我们通过指定cl::Positional使用了位置参数，这意味着使用者不会显示地以它的名字指定参数，而是会根据它在命令行中的相对位置推断出来。我们还向opt构造器传递了一个desc对象，它定义了一段描述，当使用者在命令行中输入-help参数以打印帮助信息时，此描述信息会展示给使用者。
+
+我们还有一个使用类型cl::list的参数，不同于opt，它允许传递多个参数，在这种情况下，要处理一列源代码文件。这些用法要求包含下面的头文件：
+
+.. code-block :: cpp
+
+    #include "llvm/Support/CommandLine.h"
+
+.. note ::
+
+    作为LLVM编码标准的一部分，你应该组织你的include语句，首先包含本地头文件，随后包含Clang和LLVM API头文件。当两个头文件属于相同的类别时，按字母顺序安排它们。写一个新的独立工具，它自动为你整理头文件顺序，这将是一个有趣的项目。
+
+最后三个全局变量设定所需选项以使用我们的重构工具。第一个是名字参数-method。紧随的第一个字符串指定参数名字，没有短线，而cl::RequiredValues会通知命令行解析器，指示这个值是运行这个程序所需要的。这个参数会给出方法的名字，我们的工具会去寻找这个方法，然后将它的名字修改为由-newname给出的名字。参数-class给出拥有这个方法的类的名字。
+
+下一段来自模板代码的代码摘要管理一个新的CompilationDatabase对象。首先，我们需要包含定义OwningPtr类的头文件，它是LLVM库用到的智能指针，就是说，它会自动地释放所包含的指针，当它到达作用域的末尾时。
+
+.. code-block :: cpp
+
+    #include "llvm/ADT/OwningPtr.h"
+
+.. note ::
+
+    注意Clang版本
+
+    从Clang/LLVM版本3.5开始，人们弃用了OwningPtr<>模板，而是转向C++标准的std::unique_ptr<>模板。
+
+其次，我们需要包含CompilationDatabase类的头文件，它是我们第一次用到的正式属于LibTooling的文件：
+
+.. code-block :: cpp
+
+    #include "clang/Tooling/CompilationDatabase.h"
+
+这个类负责管理编译database，本章的开头解释了对它的配置。它是一个强大的编译命令的列表，这些命令是处理每个源文件所必需的，使用者用你的工具分析这些文件，这是他们感兴趣的。为了初始化这个对象，我们用到一个工厂方法，称为loadFromDirectory，它会从一个特定的build目录加载编译database文件。这就是将build路径声明为输入工具的参数的目的；使用者需要指定从哪里加载他们的源文件以及编译database文件。
+
+注意，我们给这个工厂成员函数输入两个参数：BuildPath，我们的cl::opt对象，它代表一个命令行对象，以及一个近期声明的ErrorMessage字符串。ErrorMessage字符串会被填充一个消息，假如引擎加载编译database失败了，即工厂成员函数没有返回任何CompilationDatabase对象，这时我们会马上显示这个消息。llvm::report_fatal_error()函数会触发任何已配置的LLVM错误处理例程，并以错误码1退出我们的工具。它要求包含下面的头文件：
+
+.. code-block :: cpp
+
+    #include "llvm/Support/ErrorHandling.h"
+
+在我们的例子中，我们缩写了很多类的完全修饰名字，因此还需要在全局作用域添加若干个using声明，但是只要你喜欢，你可以使用完全修饰名字：
+
+.. code-block :: cpp
+
+    using namespace clang; 
+    using namespace std; 
+    using namespace llvm; 
+    using clang::tooling::RefactoringTool; 
+    using clang::tooling::Replacement; 
+    using clang::tooling::CompilationDatabase; 
+    using clang::tooling::newFrontendActionFactory;
+
+使用AST匹配器
+====================================================
+
+本章的Clang Query小节简单地介绍过了AST匹配器，但是我们在这里会深入分析其细节，因为它们对于编写基于Clang的代码重构工具是非常重要的。
+
+AST匹配器库让它的使用者能够轻松地匹配符合特定断言的Clang AST的子树，例如，表示对一个函数的调用的所有AST节点，它的名字为calloc，并且有两个参数。查找特定的Clang AST节点并修改它们，这是每个代码重构工具共同的基本任务，对这个库的利用极大地减轻了编写此类工具的任务。
+
+为了帮助我们找到正确的匹配器，我们会依靠Clang Query和AST匹配器文档，文档在此处可获得：http://clang. llvm.org/docs/LibASTMatchersReference.html。
+
+我们先为你的工具编写一个名为wildlifesim.cpp的测试案例。这是一个复杂的一维动物生活模拟器，其中的动物可以沿着直线向任何方向行走：
+
+.. code-block :: cpp
+
+    class Animal {
+      int position; 
+    public: 
+      Animal(int pos) : position(pos) {} 
+      // Return new position 
+      int walk(int quantity) { 
+        return position += quantity; 
+      } 
+    }; 
+    class Cat : public Animal { 
+    public: 
+      Cat(int pos) : Animal(pos) {} 
+      void meow() {} 
+      void destroySofa() {} 
+      bool wildMood() {return true;} 
+    }; 
+    int main() { 
+      Cat c(50); c.meow(); 
+      if (c.wildMood()) 
+        c.destroySofa(); 
+      c.walk(2); 
+      return 0; 
+    }
+
+我们要求你的工具能够将成员函数比如walk重命名为run。让我们运行Clang Query，研究在此例子中AST看起来是什么样子。我们会用recordDecl匹配器，输出所有RecordDecl AST节点的内容，它们负责表示C结构和C++类：
+
+.. code-block :: bash
+
+    $ clang-query wildanimal-sim.cpp -- 
+    clang-query> set output dump 
+    clang-query> match recordDecl() 
+    (...) 
+    |-CXXMethodDecl 0x(...) <line:6:3, line 8:3> line 6:7 walk 'int (int)' 
+    (...)
+
+在表示Animal类的RecordDecl对象的内部，我们观察到walk被表示为一个CXXMethodDecl AST节点。通过查看AST匹配器文档，我们发现它是由methodDecl AST匹配器匹配的。
+
+组合匹配器
+----------------------------------------------------
+
+AST匹配器的强大在于它们能被组合。如果我们只想要MethodDecl节点，它们声明了一个称为walk的成员函数，就可以先匹配所有名为walk的有名字声明，然后精炼之使之只匹配那些又是方法声明的节点。hasName(“input”)匹配器返回所有名为“input”的有名字声明。你可以在Clang Query中测试methodDecl和hasName的组合：
+
+.. code-block :: bash
+
+    clang-query> match methodDecl(hasName("walk"))
+
+你将看到它只返回了一个声明，walk的声明，而不是代码中存在的所有八个不同方法的声明。太好了！
+
+尽管如此，观察到仅修改Animal类的walk方法的定义是不够的，因为派生的类可能重载它。我们不希望我们的重构工具重写了基类的一个方法而不重写派生类中重载的其它方法。
+
+我们需要找到所有定义了walk方法的类，它们是Animal类或者其派生类。为了找到所有Animal类或者其派生类，我们使用匹配器isSameOrDerivedFrom()，它期望一个NamedDecl参数。这个参数将通过和一个匹配器的组合来提供，这个匹配器选择具有特定名字的所有NamedDecl，hasName()。因此，我们的查询看起来是这样的：
+
+.. code-block :: bash
+
+    clang-query> match recordDecl(isSameOrDerivedFrom(hasName("Animal")))
+
+我们还需要选择那些重载了walk方法的派生类。hasMethod()断言返回包含具体方法的类声明。我们将它和第一个查询组合成如下查询：
+
+.. code-block :: bash
+
+    clang-query> match recordDecl(hasMethod(methodDecl(hasName("walk"))))
+
+为了用and操作符语义（所有的断言必须成立）连结两个断言，我们使用allOf()匹配器。它规定所有作为操作数输入的匹配器必须成立。此时我们准备好了建造我们最终的查询，以找到我们将重写的所有声明：
+
+.. code-block :: bash
+
+    clang-query> match recordDecl(allOf(hasMethod(methodDecl(hasName("wa lk"))), isSameOrDerivedFrom(hasName("Animal"))))
+
+利用这个查询，我们能够精确地找到Animal类或者其派生类的所有walk方法的声明。
+
+这允许我们修改所有这些声明的名字，但是我们还需要修改方法的调用。为此，我们先来考察CXXMemberCallExpr节点和它的匹配器memberCallExpr。试一下：
+
+.. code-block :: bash
+
+    clang-query> match memberCallExpr()
+
+Clang Query返回四个匹配，因为我们的代码确实含有四个方法调用：meow，wildMood，destroySofa，和walk。我们只对定位最后一个感兴趣。我们已经知道如何利用hasName()匹配器来选择具有特定名字的声明，但是如何将具有名字的声明映射到成员函数调用的表达式呢？答案是使用member()匹配器来只选择它们，它们是具有名字并且和一个方法名字相链接的声明，然后使用callee()匹配器将它们和调用表达式链接起来。完整的表达式如下：
+
+.. code-block :: bash
+
+    clang-query> match memberCallExpr(callee(memberExpr(member(hasName("walk")))))
+
+然而，这样的做法，我们盲目地选择了所有对walk()方法的调用。我们只想选择那些确实指向Animal类或者其派生类的walk调用。memberCallExpr()匹配器接受第二个匹配器作为参数。我们会使用thisPointerType()匹配器以只选择那些方法调用，其被调用的对象是特定的类。利用这个规则，我们构建了完整的表达式：
+
+.. code-block :: bash
+
+    clang-query> match memberCallExpr(callee(memberExpr(member(hasName("wa lk")))), thisPointerType(recordDecl(isSameOrDerivedFrom(hasName("Anim al")))))
+
+在代码中运用AST匹配器断言
+-----------------------------------------------------
+
+我们已经决定了用哪些断言来捕获正确的AST节点，是时候在我们的工具的代码中运用它们了。首先，为了使用AST匹配器，我们需要添加新的include指令：
+
+.. code-block :: cpp
+
+    #include "clang/ASTMatchers/ASTMatchers.h" 
+    #include "clang/ASTMatchers/ASTMatchFinder.h"
+
+我们还需要添加新的using指令，使得易于引用这些类（写在其它的using指令后面）：
+
+.. code-block :: cpp
+
+using namespace clang::ast_matchers;
+
+第二个头文件是使用实际的查找器机制所必须的，马上我们会介绍它。从之前停止的地方继续编写main函数，我们开始添加剩余的代码：
+
+.. code-block :: cpp
+
+    RefactoringTool Tool(*Compilations, SourcePaths);
+    ast_matchers::MatchFinder Finder;
+    ChangeMemberDecl DeclCallback(&Tool.getReplacements());
+    ChangeMemberCall CallCallback(&Tool.getReplacements()));
+    Finder.addMatcher(recordDecl(allOf(hasMethod(id("methodDecl", methodDecl(hasName(OriginalMethodName)))),
+        isSameOrDerivedFrom(hasName(ClassName)))), &DeclCallback);
+    Finder.addMatcher(memberCallExpr(callee(id("member", memberExpr(hasName(OriginalMethodName))))),
+        thisPointerType(recordDecl(isSameOrDerivedFrom(hasName(ClassName)))), &CallCallback);
+    return Tool.runAndSave(newFrontendActionFactory(&Finder));
+
+.. note ::
+
+    注意Clang版本：在版本3.5中，你需要将以上代码的最后一行修改为return Tool.runAndSave(newFrontendActionFactory(&Finder.get());为了使它能工作。
+
+这完成了main函数的整个代码。之后我们会介绍回调函数的代码。
+
+第一行代码实例化了一个新的RefactoringTool对象。这是我们用到的LibTooling的第二个类，它需要一个另外的语句：
+
+.. code-block :: cpp
+
+    #include "clang/Tooling/Refactoring.h"
+
+RefactoringTool类为你的工具实现了协调基本任务的所有逻辑，例如打开源文件，解析它们，运行AST匹配器，当匹配发生时调用你的回调函数以执行一个动作，并按照你的工具的要求修改源代码。这就回答了为什么在初始化所有需要的对象之后，我们要调用RefactoringTool::runAndSave()，然后才结束main函数。我们将控制转移到这个类，让它执行所有基本任务。
+
+接下来，我们声明了一个MatchFinder对象，其头文件已经包含了。这个类负责对Clang AST执行匹配，这是你已经用Clang Query练习过的。MatchFinder要求配置AST匹配器和回调函数，当所提供的AST匹配器匹配一个AST节点时，回调函数就会被调用。在这个回调函数中，你将有机会修改源代码。回调函数会被实现为一个MatchCallback的子类，之后我们会探讨它。
+
+然后，我们接着声明回调函数对象，并且用MatchFinder::addFinder()方法将一个具体的AST匹配器关联到一个回调函数。我们声明两个单独的回调函数，一个用于重写方法声明，另一个用于重写方法调用。我们将这两个回调函数命名为DeclCallback和CallCallback。我们使用前面小节设计的两个AST匹配器组合，但是我们用ClassName替换类名字Animal，这是命令行参数，使用者会用它提供他们的要被重构的类名字。还有，我们用OriginalMethodName替换walk，这也是命令行参数。
+
+我们还战略性地引入了新的匹配器，称为id()，它不修改表达式所匹配的节点，只是将一个名字绑定到一个具体的节点。这是非常重要的，使得回调函数能够产生替换内容。id()匹配器接受两个参数，第一个时节点的名字，你会利用它获取节点，第二个是匹配器，它会捕获带名字的AST。
+
+第一个AST组合负责定位成员方法声明，在其中我们命名了MethodDecl节点，它识别方法。第二个AST组合负责定位对成员函数的调用，在其中我们命名了CXXMemberExpr节点，它连结被调用的成员函数。
+
+编写回调函数
+===================================================
+
+你需要定义当AST节点被匹配时要执行的动作。我们为此创建两个新的类，它们派生自MatchCallback，每个匹配各有一个类。
+
+.. code-block :: cpp
+
+    class ChangeMemberDecl : public ast_matchers::MatchFinder::MatchCallback {
+        tooling::Replacements *Replace;
+    public:
+        ChangeMemberDecl(tooling::Replacements *Replace) :
+            Replace(Replace) {}
+        virtual void run(const ast_matchers::MatchFinder::MatchResult &Result) {
+            const CXXMethodDecl *method = Result.Nodes.getNodeAs<CXXMethodDecl>(“methodDecl”);
+            Replace->insert(Replacement(*Result.SourceManager, CharSourceRange::getTokenRange(SourceRange(method->getLocation())), NewMethodName));
+        }
+    };
+    
+        class ChangeMemberCall : public ast_matchers::MatchFinder::MatchCallback {
+            tooling::Replacements *Replace;
+    public:
+        ChangeMemberCall(tooling::Replacements *Replace) :
+            Replace(Replace) {}
+        virtual void run(const ast_matchers::MatchFinder::MatchResult &Result) {
+            const MemberExpr *member = Result.Nodes.getNodeAs<MemberExpr>(“member”);
+            Replace->insert(Replacement(*Result.SourceManager, CharSourceRange::getTokenRange(SourceRange(member->getMemberLoc())), NewMethodName));
+        }
+    };
+
+这两个类都存储了对Replacements对象的私有的引用，它只是一个对std::set<Replacement>的typedef。Replacement类存储的信息包括，哪些行需要打补丁，在哪个文件，以及用哪部分文本。它的序列化，我们在介绍Clang Apply Replacements时讨论过了。RafactoringTool类在内部管理Replacement对象的集合，这解释了为什么我们在main函数中利用RefactoringTool::getReplacements()方法获得这个集合，并且初始化我们的回调函数。
+
+我们定义了一个基本的构造器，它的参数是一个指向Replacements对象的指针，我们会存储它，为以后的使用。我们会通过重载run()方法，来实现回调函数的动作，又一次地，它的代码出奇地简单。我们的函数接受一个MatchResult对象作为参数。对于一个给定的匹配，MatchResult类存储了绑定一个名字的所有节点，如我们的id()匹配器要求的那样。
+
+这些节点由BoundNodes类管理，它们在MatchResult对象中是公开可见的，可通过节点名字访问。因此，我们在run()函数中的第一个动作是得到我们感兴趣的节点，通过调用专门的方法BoundNodes::getNodeAs<CXXMethodDecl>。结果，我得到了一个指向CXXMethodDecl AST节点的只读版本的引用。
+
+获得了对这个节点的访问之后，为了决定如何给代码打补丁，我们需要一个SourceLocation对象，它告诉我们关联的标记在源文件中所占据的确切的行和列。CXXMethodDecl继承自基类Decl，它表示通用的声明。这个通用的类提供了Decl::getLocation()方法，它返回的正是我们想要的SourceLocation对象。有了这个信息，我们就可以创建我们的第一个Replacement对象，并将它插入到我们的工具所建议的源代码修改的列表中。
+
+我们用到的Replacement构造器需要三个参数：一个SourceManager对象的引用，一个CharSourceRange对象的引用，和一个包含新的文本的字符串，这个字符串将被写入到由头两个参数指定的位置。SourceManager类是一个普通的Clange组件，它管理加载到内存的源代码。CharSourceRange类包含有用的分析程序，它分析标记并推导出组成这个标记的源代码范围（文件中的两个点），从而决定需要从源代码文件中删除的确切的字符，而为新的文本空出位置。
+
+我们用这个信息创建一个新的Replacement对象，并且将它存储在由RefactoringTool管理的set中，就完成任务了。实际上，RefactoringTool会应用这些补丁，或者去除冲突的补丁。不要忘记将所有本地的声明包裹在一个匿名的名字空间里；这是一个不让这个翻译单元导出本地符号的好办法。
+
+测试你的新重构工具
+=====================================================
+
+我们将用我们的野生模拟器代码例子作为一个测试案例，来测试你新创建的工具。现在你应该运行make，然后等待LLVM完成对你的新工具的编译和链接。工具生成之后，尽情地试用一番。看看我们声明为cl::opt对象的参数在命令行接口中是什么样子：
+
+.. code-block :: bash
+
+    $ izzyrefactor -help
+
+为了使用这个工具，我们还需要一个编译命令database。我们将手动地创建一个CMake配置文件，以避免要创建并运行它。将它命名为compile_commands.json，写入下面的代码。将标签<FULLPATHTOFILE>替换为完整的路径，指向你放置野生模拟器源代码的文件夹：
+
+.. code-block :: bash
+
+    [
+    { 
+    "directory": "<FULLPATHTOFILE>", 
+    "command": "/usr/bin/c++ -o wildlifesim.cpp.o -c <FULLPATHTOFILE>/ wildlifesim.cpp", 
+    "file": "<FULLPATHTOFILE>/wildlifesim.cpp" 
+    }
+    ]
+
+保存这个编译命令database之后，就可以测试工具了：
+
+.. code-block :: bash
+
+    $ izzyrefactor -class=Animal -method=walk -newname=run ./ wildfilesim.cpp
+
+现在你可以检查野生模拟器源代码，会看到这个工具重命名了所有方法的定义和调用。这结束了我们的指导，但是你可以在下一节查看更多的资源，并进一步扩展你的知识。
+
+更多资源
+*********************************************
+
+你可以从下面的链接找到更多的资源：
+
+•	http://clang.llvm.org/docs/HowToSetupToolingForLLVM.html：这个链接包含关于如何设置命令database的指令。一旦你有了这个文件，你甚至可以配置你喜欢的文本编辑器，来运行一个工具以按需检查代码。
+•	http://clang.llvm.org/docs/Modules.html：这个链接给出了关于实现Clang C/C++模块的更多信息。
+•	http://clang.llvm.org/docs/LibASTMatchersTutorial：这是另一个关于使用AST匹配器和LibTooling的教程。
+•	http://clang.llvm.org/extra/clang-tidy.html：这里有Clang Tidy用户手册，伴随其它工具的用户手册。
+•	http://clang.llvm.org/docs/ClangFormat.html：这里包含了ClangFormat的用户手册。
+•	http://www.youtube.com/watch?v=yuIOGfcOH0k：这里包含了Chandler Carruth对C++Now的介绍，解释了如何建造一个重构工具。
+
+总结
+*********************************************
+
+在这一章中，我们介绍了建立在LibTooling基础之上的Clang工具，它们让你能够轻松地编写操作C/C++源代码的工具。我们介绍了如下工具：Clang Tidy，Clang的剥绒机；Clang Modernizer，它自动地将旧的C++编程方式替换为新的；Clang Apply Replacements，它负责应用由其它工具创建的补丁；ClangFormat，它自动地缩进和格式化C++代码；Modularize，它让使用未标准化的C++模块框架变得容易；PPTrace，它文档化预处理器的活动；Clang Query，它让你能够测试AST匹配器。最后，我们通过演示如何创建你自己的工具结束了这一章。
+
+到此本书该结束了，但是这绝对不应该是你学习旅途的终点。网络上有很多关于Clang和LLVM的额外资料，不是教程就是正式文档。还有，Clang/LLVM总是在进化并引入新的特性，值得我们继续学习。要了解这些内容，请访问LLVM的博客：http://blog.llvm.org。
+
+黑客快乐！

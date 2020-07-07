@@ -1,0 +1,411 @@
+第8章 交叉平台编译
+##############################
+
+传统的编译器将源代码转换为本地的可执行文件。在此上下文中，本地意味着可执行文件运行的平台和编译器的平台相同，平台是如下要素的结合：硬件、操作系统、应用程序二进制接口（ABI）、系统接口的选择。这些选择定义了一种机制，用户层程序利用这种机制，与背后的系统相通信。因此，如果你使用GNU/Linux x86机器上的编译器，它生成的可执行文件会链接你的系统库，被定制为在完全相同的平台上运行。
+
+交叉平台编译是一个用编译器为不同的、非本地的平台生成可执行文件的过程。如果生成的代码需要链接的库不同于你本身系统的库，一般可以通过设置编译选项来解决。然而，如果你想要部署可执行文件的目标平台和你的平台不兼容，比如用了不同的处理器架构、操作系统、ABI、或者目标文件，你需要采用交叉编译。
+
+当为资源有限的系统开发应用程序时，交叉编译器是至关重要的。举例来说，嵌入式系统通常由低性能的处理器和有限的内存组成，由于编译过程会密集占用CPU和内存，在这样的系统上运行编译器，如果可能的话，是很慢的，会耽搁应用开发周期。因此，在这样的场景中，交叉编译器是极有用的工具。在这一章中，我们将讨论下面的内容：
+
+* 对Clang和GCC交叉编译方案的比较
+* 什么是工具链？
+* 如何用Clang命令行执行交叉编译？
+* 如何通过生成定制的Clang执行交叉编译？
+* 流行的用于测试目标二进制程序的模拟器和硬件平台
+
+比较GCC和LLVM
+******************************
+
+像GCC这样的编译器要支持交叉编译，必须以特别的配置编译出来，为每个目标安装不同的GCC。通常在实践中，举例来说，会给你的gcc命令添加一个目标名称前缀，例如arm-gcc，表示针对ARM的GCC交叉编译器。然而，Clang/LLVM通过简单地开关同一个Clang驱动器的命令行选项，选择期望的目标、库路径、头文件、链接器、和汇编器，可以为其它目标生成代码。因此，一个Clang驱动器，适用所有的目标。不过，有些LLVM发布版不包含所有的目标，由于某种考虑，比如可执行文件的大小。另一方面，如果你自己编译LLVM，可以选择支持哪些目标；参见第1章，编译和安装LLVM。
+
+相比LLVM，GCC是一个更古老的项目，自然也是一个更成熟的项目。它支持50多个后端，广泛地被这些平台用作交叉编译器。然而，由于GCC设计的限制，它的驱动器只能以安装为单位处理单个目标库。这就是为什么，必须部署安装不同的GCC，以为其它目标生成代码。
+
+与此相反，Clang驱动器默认编译和链接所有的目标库。在运行时，即使Clang需要知道几个目标特性，Clang/LLVM组件可以通过目标无关的接口访问任意目标的信息，这些接口被设计用于提供任何命令行指定的目标的信息。
+
+下图说明了LLVM和GCC是如何为不同的目标编译一份源代码的；前者动态地为截然不同的处理器生成代码，而后者需要为每个处理器安装一个不同的交叉编译器。
+
+.. figure :: ch08/ch08_gcc_llvm.png
+   :align: center
+
+你也可以编译一个专用的Clang交叉编译器，像GCC那样。虽然这种选择要付出更多工夫以编译安装一个单独的Clang/LLVM，但是它的命令行接口更易于使用。在配置的时候，用户可以提供固定的指向目标库、头文件、汇编器、和链接器的路径，避免每次执行交叉编译时都要输入大量的命令行参数。
+
+在这一章中，我们将展示如何用Clang为多个平台生成代码，通过驱动器命令行参数，以及如何生成一个特殊的Clang交叉编译器的驱动器。
+
+理解目标三元组
+********************************
+
+我们从三个重要的定义开始，具体如下：
+
+•	Build表示编译交叉编译器的平台
+•	Host表示交叉编译器将运行的平台
+•	Target表示交叉编译器运行生成的可执行文件或者库所针对的平台
+
+在标准的交叉编译器中，Build和Host平台是相同的。目标三元组定义了Build、Host、和Target平台。三元组用信息唯一地指定一个目标，此信息包括处理器架构、操作系统版本、C库类别、和目标文件类型。
+
+三元组的格式不是严格规定的。举例来说，GNU工具，在格式<arch>-<sys/vendor>-<other>-<other>中，可能接受包含两个、三个、甚至四个字段的三元组，例如arm-linux-eabi、mips-linux-gnu、x86_64-linux-gnu、x86_64-apple-darwin11、和sparc-elf。Clang努力和GCC保持兼容，因而认可上面的格式，但是它在内部会将任意三元组规范为自己的三元组，<arch><sub>-<vendor>-<sys>-<abi>。
+
+下面的表格列出了每个LLVM三元组字段的可能选项；<sub>字段没有包含在其中，因为它表示架构变种，例如armv7架构的v7。查看<llvm_source>/include/llvm/ADT/Triple.h，了解三元组详细内容。
+
++-------------------------+--------------------+----------------------------------+------------------------+
+| Architecture (<arch>)   | Vendor (<vendor>)  | Operating system (<sys>)         | Environment (<abi>)    |
++=========================+====================+==================================+========================+
+| arm, aarch64, hexagon,  | unknown,           | unknown, auroraux,               | unknown,               |
+| mips, mipsel, mips64,   | apple, pc,         | cygwin, darwin,                  | gnu,                   |
+| mips64el, msp430,       | scei, bgp,         | dragonfly, freebsd,              | gnueabihf,             |
+| ppc, ppc64, ppc64le,    | bgq, fsl,          | ios, kfreebsd, linux,            | gnueabi,               |
+| r600, sparc, sparcv9,   | ibm, and           | lv2, macosx, mingw32,            | gnux32,                |
+| systemz, tce, thumb,    | nvidia             | netbsd, openbsd,                 | eabi, macho,           |
+| x86, x86_64, xcore,     |                    | solaris, win32, haiku,           | android, and           |
+| nvptx, nvptx64, le32,   |                    | minix, rtems, nacl, cnk,         | elf                    |
+| amdil, spir, and        |                    | bitrig, aix, cuda, and           |                        |
+| spir64                  |                    | nvcl                             |                        |
++-------------------------+--------------------+----------------------------------+------------------------+
+
+
+注意，不是所有arch、vendor、sys、和abi组合是有效的。每种架构支持有限数量的组合。
+
+下图说明了一种ARM交叉编译器的概念，它在x86上被编译，在x86上运行，生成ARM可执行文件。好奇的读者可能想知道，如果Host和Build平台是不同的会怎样。这种组合形成加拿大型交叉编译器，过程稍微复杂一点，要求下图中的深色Compiler框是另一个交叉编译器，而不是本地编译器。加拿大型交叉这个名字是根据这样的事实提出的，即在当时名字提出时加拿大有三个政党，以及加拿大型交叉编译器用到三个平台。举例来说，如果你将交叉编译器发布给用户，他们期望支持的平台不同于你自己的。
+
+.. figure :: ch08/ch08_arm_cross_compiler.png
+   :align: center
+
+准备工具链
+*********************************
+
+编译器这个术语意味着一组编译相关的任务，由不同的组件来执行，例如前端、后端、汇编器、和链接器。它们之中，有些是由单独的工具实现的，而其它的是集成在一起的。然而，当为本地或者其它目标开发应用程序时，用户需要更多资源，例如平台相关的库、调试器、和执行任务的工具，举例来说，读取目标文件的工具。因此，平台制造者常常在他们的平台中为软件开发发布一批工具，从而为客户提供了一套开发工具链。
+
+为了生成或者使用你的交叉编译器，需要知道工具链组件，以及它们之间如何交互，这是非常重要的。下图显示了成功交叉编译所必需的主要工具链组件，而后面的小节将描述每个组件：
+
+.. figure :: ch08/ch08_toolchain.png
+   :align: center
+
+标准C和C++库
+=================================
+
+C库是必需的，以支持标准的C语言功能，例如内存分配（malloc()/free()），字符串处理（strcmp()），和IO（printf()/scanf()）。普遍的C库头文件的例子，包括stdio.h、stdlib.h、和string.h。可用的C库实现不止一种。GNU C库（glibc）、newlib、和uClibc是广为人知的例子。这些库可用于不同的目标，并且可用移植到新的目标。
+
+类似地，C++标准库实现了C++功能，例如输入和输出流、容器、字符串处理、和线程支持。GNU的libstdc++和LLVM的libc++（http://libcxx.llvm.org）是实现的例子。实际上，完整的GNU C++库由libstdc++和libsupc++组成。后者是一个让移植变得容易的目标相关的层级，它专门处理异常处理和RTTI。对于除了Mac OS X的系统，LLVM的libc++实现仍然依赖于第三方的libsupc++的替代物（参见第2章（外部项目）的“介绍libc++标准库”小节，以了解详情）。
+
+交叉编译器需要知道目标C/C++库和头文件的路径，这样它才能找到正确的函数原型，之后才能正确地链接。头文件要匹配已编译的库，版本和实现都有匹配，这是重要的事情。举例来说，错误配置的交叉编译器可能改为搜索本地系统的头文件，导致编译错误。
+
+运行时库
+==================================
+
+每个目标都需要使用特殊的函数来模拟低层级的本地不支持的函数。例如，32位的目标通常缺乏64位寄存器，无法直接处理64位类型。因此，目标可能使用两个32位寄存器并调用特殊的函数来执行简单的算术运算（加、减、乘、除）。
+
+代码生成器生成对这些函数的调用，期望在链接的时候它们可以被找到。驱动器必须给出必需的库，而不是用户。在GCC中，这个功能由运行时库libgcc实现。LLVM提供了完全替代品，称为compiler-rt（见第2章外部项目）。因此，Clang驱动器在调用链接器时，使用参数-lgcc，或者-lclang-rt（以链接compiler-rt）。再说一次，为了正确地被链接，目标特定的运行时库必须存在于路径中。
+
+汇编器和链接器
+=================================
+
+汇编器和链接器通常由不同的工具提供，编译器驱动器会调用它们。举例来说，GNU Binutils提供的汇编器和链接器支持若干个目标，对于本地目标，通常可以在系统路径中找到它们，分别命名为as和ld。也有一个基于LLVM的链接器，但仍然是实验性的，称为lld（http://lld.llvm.org）。
+
+为了调用这样的工具，目标三元组被用作汇编器和链接器的名字的前缀，并且在系统的PATH变量中查找它们。举例来说，当为mips-linux-gnu生成代码时，驱动器可能会搜索mips-linux-gnu-as和mips-linux-gnu-ld。根据目标三元组信息，Clang在搜索的时候可能有所不同。
+
+在Clang中，有些目标不需要调用外部的汇编器。由于LLVM通过MC层提供了直接的目标代码输出，驱动器可以使用集成的MC汇编器，通过选项integrated-as，对于某些特定的目标，它是默认开启的。
+
+Clang前端
+=================================
+
+在第5章（LLVM中间表示）中，我们解释了Clang输出的LLVM IR不是目标无关的，因为C/C++语言就不是目标无关的。除了后端之外，前端也必须实现目标特定的约束。因此，你必须意识到，虽然Clang支持某个特定的处理器，但是，如果目标三元组不严格地匹配这个处理器，前端可能生成不完美的LLVM IR，它可能导致ABI不匹配和运行时错误。
+
+Multilib
+---------------------------------
+
+Multilib让用户能够在相同的平台上运行为不同的ABI而编译的应用程序。这个机制避免了多个交叉编译器，只要一个交叉编译器可以访问每个ABI变体的库和头文件的已编译的版本。举例来说，multilib允许soft-float和hard-float库并存，就是说，一个库依赖于软件模拟浮点数算术运算，一个库依赖于处理器FPU处理浮点数。例如，GCC每个multilib版本都有几个libc和libgcc的版本。
+
+举例来说，在MIPS GCC中，multilib库的文件夹结构的组织方式如下：
+
+* ``lib/n32``：这里存放n32库，支持n32 MIPS ABI
+* ``lib/n32/EL``：这里存放libgcc、libc、和libstdc++的小端（little-endian）版本
+* ``lib/n32/msoft-float``：这里存放n32 soft-float库
+* ``lib/n64``：这里存放n64库，支持n64 MIPS ABI
+* ``lib/n64/EL``：这里存放libgcc、libc、和libstdc++的小端（little-endian）版本
+* ``lib/n64/msoft-float``：这里存放n64 soft-float库
+
+Clang支持multilib环境，只要为库和头文件提供了正确的路径。然而，因为前端可能为有些目标的不同的ABI生成不同的LLVM IR，有必要核对你的路径和目标三元组，确保它们是匹配的，避免运行时错误。
+
+Clang命令行参数交叉编译
+**********************************
+
+现在你知道了每个工具链组件，我们将展示如何将Clang用作交叉编译器，通过使用合适的驱动器参数。
+
+.. note ::
+
+    这节中的所有例子都在运行Ubuntu 12.04的x86_64机器上测试过。我们使用Ubuntu特定的工具下载了一些依赖软件，但是Clang相关的命令应该不经修改（或者稍微修改）就可以在任何其它的OS环境中使用。
+
+驱动器的目标选项
+==================================
+
+Clang通过-target=<triple>驱动器选项动态地选择目标三元组，而为之生成代码。除了三元组，可以用其它的选项以更精细地选择目标：
+
+* 选项-march=<arch>选择目标的基础架构。<arch>值的例子，包括ARM的armv4t、armv6、armv7、和armv7f，MIPS的mips32、mips32r2、mips64、和mips64r2。这个选项还单独地选定一个默认的基础CPU，为代码生成器所用。
+* 选项-mcpu=<cpu>选择具体的CPU。例如，cortex-m3和cortex-a8是ARM具体的CPU，pentium4、athlon64、和corei7-avx2是x86 CPU。每个CPU有一个基础<arch>值，为目标所定义，并为驱动器所用。
+* 选项-mfloat-abi=<abi>决定哪种寄存器用于存放浮点值：soft或者hard。如前所述，这决定了是否使用软件浮点数模拟。这还隐含了对调用惯例和其它ABI规范的改变。别名选项-msoft-float和-mhard-float也是可用的。注意，如果没有设定此选项，ABI类型会遵从所选CPU的默认类型。
+
+可以用clang--help-hidden参数查看其它目标特定的开关，它甚至将展示传统帮助信息所隐藏的选项。
+
+依赖
+==================================
+
+我们将以ARM交叉编译器为活的例子演示如何用Clang作交叉编译。第一步是在你的系统上安装一份完整的ARM工具链，并识别所提供的组件。
+
+要为拥有hard浮点数ABI的ARM安装GCC交叉编译器，可以用下面的命令：
+
+.. code-block :: bash
+
+    $ apt-get install g++-4.6-arm-linux-gnueabihf gcc-4.6-arm-linux-gnueabihf
+
+要为拥有soft浮点数ABI的ARM安装GCC交叉编译器，可以用下面的命令：
+
+.. code-block :: bash
+
+    $ apt-get install g++-4.6-arm-linux-gnueabi gcc-4.6-arm-linux-gnueabi
+
+.. note ::
+
+    我们刚才让你安装了完整的GCC工具链，包括交叉编译器！为什么现在你会需要Clang/LLVM呢？如工具链一节解释的那样，在交叉编译期间，编译器自身充当了若干组件的组合中的一小部分，这些组件包括汇编器、链接器、和目标库。你应该寻找你的目标平台供应商准备的工具链，因为只有这个工具链才拥有正确的头文件和库，为你的目标平台所用。典型地，这份工具链也已经随GCC编译器发布了。我们想做的则是使用Clang/LLVM，但是我们还依赖所有其它的工具链组件。
+
+    如果你想编译所有目标库，并自己准备整个工具链，你还需要准备操作系统image，以启动目标平台。如果你自己编译系统image和工具链，你要确保两者关于目标系统所用库的版本保持一致。如果你喜欢从头编译一切，可以参考关于此的交叉Linux从头开始教程（http://trac.cross-lfs.org），它是一份不错的指南。
+
+尽管apt-get会自动地安装工具链必备工具，对于基于Clang的C/C++ ARM交叉编译器，需要的和推荐的基础包如下：
+
+* libc6-dev-armhf-cross和libc6-dev-armel-cross
+* gcc-4.6-arm-linux-gnueabi-base和gcc-4.6-arm-linux-gnueabihf-base
+* binutils-arm-linux-gnueabi和binutils-arm-linux-gnueabihf
+* libgcc1-armel-cross和libgcc1-armhf-cross
+* libstdc++6-4.6-dev-armel-cross和libstdc++6-4.6-dev-armhf-cross
+
+交叉编译
+===================================
+
+尽管我们对于GCC交叉编译器本身不感兴趣，前面小节的命令安装了必需的必备工具，它们是我们的交叉编译器需要的：链接器、汇编器、库、和头文件。你可以用下面的命令为arm-linux-gnueabihf平台编译sum.c程序（来自第7章，即时编译器）：
+
+.. code-block :: bash
+
+    $ clang --target=arm-linux-gnueabihf sum.c -o sum
+    $ file sum
+    sum: ELF 32-bit LSB executable, ARM, version 1 (SYSV), dynamically linked (uses shared libs)...
+
+Clang从GNU arm-linux-gnueabihf工具链找到了所有必需的组件，生成了最终的代码。在此例中，默认所用的架构是armv6，但是我们可以提供更具体的--target参数，并且使用-mcpu，以达到更精确的代码生成：
+
+.. code-block :: bash
+
+    $ clang --target=armv7a-linux-gnueabihf -mcpu=cortex-a15 sum.c -o sum
+
+安装GCC
+------------------------------------
+
+--target指定的目标三元组被Clang用以搜索具有相同或相似前缀的GCC安装。如果找到了若干个候选者，Clang会选择它认为最匹配目标的那一个：
+
+.. code-block :: bash
+
+    $ clang --target=arm-linux-gnueabihf sum.c -o sum -v
+    clang version 3.4 (tags/RELEASE_34/final)
+    Target: arm--linux-gnueabihf
+    Thread model: posix
+    Found candidate GCC installation: /usr/lib/gcc/arm-linux-gnueabihf/4.6
+    Found candidate GCC installation: /usr/lib/gcc/arm-linux-gnueabihf/4.6.3
+    Selected GCC installation: /usr/lib/gcc/arm-linux-gnueabihf/4.6
+    (...)
+
+因为一个GCC安装通常带有汇编器、链接器、库、和头文件，Clang在安装中找到想要的工具链组件。通过提供系统中存在的工具链的确切名字的三元组，获得这样的路径通常是直接明了。然而，如果三元组是不同的或者不完整的，驱动器就会搜索并选择它认为最匹配的那一个：
+
+.. code-block :: bash
+
+    $ clang --target=arm-linux sum.c -o sum -v
+    ...
+    Selected GCC installation: /usr/lib/gcc/arm-linux-gnueabi/4.7
+    clang: Warning: unknown platform, assuming -mfloat-abi=soft
+
+注意，尽管我们为arm-linux-gnueabi和arm-linux-gnueabihf安装了GCC工具链，驱动器选择了前者。在此例中，因为所选的平台是未知的，它假设ABI是soft-float。
+
+潜在的问题
+---------------------------------------
+
+如果添加-mfloat-abi=hard选项，驱动器就忽略警告信息，仍然选择arm-linux-gnueabi而不是arm-linux-gnueabihf。这导致最终的可执行文件大概由于运行时错误无法运行，因为hard-float对象链接了soft-float库：
+
+.. code-block :: bash
+
+    $ clang --target=arm-linux -mfloat-abi=hard sum.c -o sum
+
+为什么不选择arm-linux-gnueabihf，即使输入了-mfloat-abi=hard？这是因为我们没有特别地要求clang使用arm-linux-gnueabihf工具链。如果你让驱动器作决定，它将选择找到的第一个工具链，而它可能不合乎需要。这个例子让你明白，驱动器可能会不选择最佳的选项，如果你指定的目标三元组是模糊的或不完整的，例如arm-linux。
+
+知道背后所用的工具链组件是十分重要的，以确认是否选择了正确的工具链，例如，通过使用-###参数来打印clang在编译、汇编、和链接程序的过程中调用了哪些工具。
+
+让我们尝试更模糊的目标三元组，看看究竟会发生什么。我们只使用--target=arm选项：
+
+.. code-block :: bash
+
+    $ clang --target=arm sum.c -o sum
+    /tmp/sum-3bbfbc.s: Assembler message:
+    /tmp/sum-3bbfbc.s:1: Error: unknown pseudo-op: `.syntax'
+    /tmp/sum-3bbfbc.s:2: Error: unknown pseudo-op: `.cpu'
+    /tmp/sum-3bbfbc.s:3: Error: unknown pseudo-op: `.eabi_attribute'
+    (...)
+
+从三元组中去除了OS，驱动器被糊涂了，产生一个编译错误。事实上，驱动器试图用本地（x86_64）汇编器去汇编ARM汇编语言。由于目标三元组是相当不完整的，没有OS信息，对于驱动器来说，我们的arm-linux工具链不是满意的匹配，这样它就采用了系统汇编器。
+
+修改系统根目录
+========================================
+
+通过查找系统中存在的具有给定三元组的GCC交叉编译器，在GCC安装目录中扫描一列已知的前缀（参见<llvm_source>/tools/clang/lib/Driver/ToolChains.cpp），驱动器能够找到支持目标的工具链。
+
+对于某些别的情况——不正确格式的三元组或者不存在的GCC交叉编译器——为了使用可用的工具链组件，必须告诉驱动器特别的选项。例如，--sysroot选项修改基础目录，Clang在其中搜索工具链组件，每当目标三元组没有提供足够的信息时，就可用这个选项。类似地，可以用--gcc-toolchain=<value>指定你想用的一个具体的工具链的文件夹。
+
+在我们的系统上安装的ARM工具链中，为arm-linux-gnueabi三元组所选的GCC安装路径是/usr/lib/gcc/arm-linux-gnueabi/4.6.3。从这个目录，Clang到达其它的路径以访问库、头文件、汇编器、和链接器。一个它可到达的路径是/usr/arm-linux-gnueabi，其中包含下面的子目录：
+
+.. code-block :: bash
+
+    $ ls /usr/arm-linux-gnueabi
+    bin  include  lib  usr
+
+这些文件夹中的工具链组件的组织方式，跟文件系统的/bin、/include、/lib、和/usr根文件夹中的本地工具链组件一样。考虑我们想要为带有cortex A9 CPU的armv7-linux生成代码，不依靠驱动器自动地为我们寻找组件。只要我们知道arm-linux-gnueabi的组件在何处，我就可以为驱动器提供--sysroot参数：
+
+.. code-block :: bash
+
+    $ PATH=/usr/arm-linux-gnueabi/bin:$PATH /p/cross/bin/clang --target=armv7a-linux --sysroot=/usr/arm-linux-gnueabi -mcpu=cortex-a9 -mfloat-abi=soft sum.c -o sum
+
+再一次，这是非常有用的，当有可用的工具链组件而没有GCC实体安装的时候。为什么这个方法是可行的？下面列出了三个主要的理由：
+
+* armv7a-linux：armv7a触发为ARM和linux的代码生成。它做的事情，其中之一就是告诉驱动器使用GNU汇编器和链接器的调用语法。如果没有指定OS，Clang默认采用Darwin汇编器语法，导致一个汇编器错误。
+* /usr、/lib、和/usr/include文件夹是编译器搜索库和头文件的默认位置。选项--sysroot覆盖了驱动器默认设置，查看/usr/arm-linux-gnueabi以寻找这些目录，而不是系统根目录。
+* PATH环境变量被修改了，以避免使用as和ld的默认版本。然后我们强制驱动器首先查看路径/usr/arm-linux-gnueabi，在其中找到了ARM版本的as和ld。
+
+生成一个Clang交叉编译器
+*****************************************
+
+Clang支持动态地为任意目标生成代码，如前面小节看到的那样。但是，生成一个目标专用的Clang交叉编译器的理由是存在的：
+
+•	假如用户不想使用长长的命令行来调用驱动器
+•	假如制造者想交付给客户一个平台特定的基于Clang的工具链
+
+配置选项
+=========================================
+
+LLVM配置系统中，协助交叉编译器生成的选项如下：
+
+* ``--target``：这个选项指定了默认目标三元组，Clang交叉编译器为之生成代码。这关联早先我们定义的target、host、和build概念。选项--host和--build也是可用的，但是配置脚本估计了它们的值——两者都指向本地平台。
+* ``--enable-targets``：这个选项指定安装将支持的目标。如果省略了，将支持所有目标。记住，必须用前面解释的命令行选项选择不同于默认值的目标，默认值是由--target指定的。
+* ``--with-c-include-dirs``：这个选项指定目录列表，交叉编译器应在其中搜索头文件。这个选项避免了过度地使用-I来定位目标特定的库，它们可能不在规范的路径中。此外，这些目录先于系统默认目录被搜索。
+* ``--with-gcc-toolchain``：这个选项指定已经存在于系统中的目标GCC工具链。这个选项定位了工具链组件，交叉编译器固定住它们，就像用永久的--gcc-toolchain选项。
+* ``--with-default-sysroot``：这个选项为交叉编译器执行的所有编译器调用添加--sysroot选项。
+
+用<llvm_source>/configure --help查看所有LLVM/Clang配置选项。额外（隐藏）的配置选项可用于考察目标特定的特性，例如--with-cpu、--with-float、--with-abi、和--with-fpu。
+
+编译和安装你的基于Clang的交叉编译器
+==========================================
+
+配置、编译、和安装交叉编译器的方法和编译LLVM和Clang的传统方法非常类似，后者已在第1章编译和安装LLVM中解释过了。
+
+因此，假设源代码已准备好，就可以用下面的命令，默认以Cortex-A9为目标，生成一个LLVM ARM交叉编译器：
+
+.. code-block :: bash
+
+    $ cd <llvm_build_dir>
+    $ <PATH_TO_SOURCE>/configure --enable-target=arm --disable-optimized --prefix=/usr/local/llvm-arm --target=armv7a-unknown-linux-gnueabi
+    $ make && sudo make install
+    $ export PATH=$PATH:/usr/local/llvm-arm
+    $ armv7a-unknown-linux-gnueabi-clang sum.c -o sum
+    $ file sum
+    sum: ELF 32-bit LSB executable, ARM, version 1 (SYSV), dynamically linked (uses shared libs)...
+
+记得在“理解目标三元组”一节，GCC兼容的目标三元组可以有多至四个元素，但是一些工具接受元素较少的三元组。至于LLVM所用的配置脚本，它是由GNU自动工具生成的，它期望目标三元组包含全部四个元素，其中第二个元素是厂商信息。由于我们的平台没有具体的厂商，我们将我们的三元组扩展为armv7a-unknown-linux-gnueabi。如果我们在此处坚持使用三个元素的三元组，配置脚本会失败。
+
+不需要用额外的选项来检测工具链，因为Clang照常会查找GCC安装。
+
+假设你编译并安装了另外的ARM库和头文件，分别位于/opt/arm-extra-libs/lib和/opt/arm-extra-libs/include目录。通过使用--with-c-include-dirs=/opt/arm-extra-libs/include，可以永久地将这个目录添加到Clang头文件搜索路径；为了正确地链接，-L/opt/arm-extra-libs/lib还是需要加的。
+
+.. code-block :: bash
+
+    $ <PATH_TO_SOURCE>/configure --enable-target=arm --disable-optimized --prefix=/usr/local/llvm-arm --target=armv7a-unknown-linux-gnueabi --with-c-include-dirs=/opt/arm-extra-libs/include
+
+类似地，我们可以添加sysroot（--sysroot）选项，还指定GCC工具链（--with-gcc-toolchain），让驱动器总是使用它们。对于所选的ARM三元组，这是冗余的，但是可能对其它目标有用：
+
+.. code-block :: bash
+
+    $ <PATH_TO_SOURCE>/configure --enable-target=arm --disable-optimized --prefix=/usr/local/llvm-arm --target=armv7a-unknown-linux-gnueabi --with-gcc-toolchain=arm-linux-gnueabi --with-default-sysroot=/usr/arm-linux-gnueabi
+
+别的编译方法
+============================================
+
+我们可以用其它的工具生成基于LLVM/Clang的工具链，或者用LLVM中其它的编译系统。另一个可选的方法是创建一个封装使过程变得容易。
+
+Ninja
+--------------------------------------------
+
+生成交叉编译器的一个可选方法是使用CMake和Ninja。Ninja项目的意图是成为一个小而快的编译系统。
+
+不是以传统的配置和编译步骤来生成交叉编译器，而是用特别的CMake选项为Ninja生成适合的编译指令，然后Ninja为想要的目标编译并安装交叉编译器。
+
+关于如何应用这个方法的说明和文档见http://llvm.org/docs/HowToCrossCompileLLVM.html。
+
+ELLCC
+--------------------------------------------
+
+ELLCC工具是一个基于LLVM的框架，用于为嵌入式目标生成工具链。
+
+它致力于为交叉编译器的生成和使用创建简易的资源。它是可扩展的，支持新的目标配置，开发者易于用它让他们的程序多目标化。
+
+ELLCC还编译并安装若干个工具链组件，包括调试器和平台测试QEMU（如果可用）。
+
+ecc工具是最终可用的交叉编译器。它在Clang交叉编译器上建了一层，接受GCC和Clang兼容的命令行选项，为任意支持的目标编译程序。你可以在http://ellcc.org了解更多。
+
+EmbToolkit
+---------------------------------------------
+
+嵌入式系统工具包是另一个为嵌入式系统生成工具链的框架。它支持生成基于Clang或LLVM的工具链，同时编译它的组件并提供一个根文件系统。
+
+它为组件选择提供ncurses和GUI接口。你可以在https://www.embtoolkit.org了解更多详情。
+
+测试
+*********************************************
+
+检验交叉编译是否成功的最合理的方式是在真实的目标平台上运行结果可执行文件。然而，当真实的目标不可用或承担不起时，可以采用几个仿真方法来测试你的程序。
+
+开发板
+============================================
+
+有若干种开发板，适用于众多平台。如今，开发板是买得起的，可以在网上买到。例如，可以找到ARM开发板，从简单的Cortex-M系列处理器到多核Cortex-A系列。
+
+外围设备组件多样，但是在这些板子上通常都有网卡、Wi-Fi、USB、和内存卡。因此，交叉编译的应用程序可以通过网络、USB传输，或者写到闪存卡上并且在裸机或者嵌入式Linux/FreeBSD系统上执行。
+
+这样的开发板的部分例子如下：
+
+============== ======================== ========================== ==================================================
+ Name           Features                 Architecture/Processor     Link
+============== ======================== ========================== ==================================================
+ Panda Board    Linux, Android, Ubuntu   ARM, Dual Core Cortex A9   http://pandaboard.org/
+ Beagle Board   Linux, Android, Ubuntu   ARM, Cortex A8             http://beagleboard.org/
+ SEAD-3         Linux                    MIPS M14K                  http://www.timesys.com/supported/processors/mips
+ Carambola-2    Linux                    MIPS 24K                   http://8devices.com/carambola-2
+============== ======================== ========================== ==================================================
+
+还有很多带有ARM和MIPS处理器的移动电话，可运行自带开发软件包的Android。还可以尝试运行Clang。
+
+仿真器
+==============================================
+
+制造商为其处理器开发仿真器是十分常见的，因为软件开发周期甚至在物理平台就绪之前就开始了。带有仿真器的工具链发布给客户，或者用于内部产品测试。
+
+测试交叉编译的程序的一个方法，就是利用这些制造商提供的环境。然而，也有几个开源的仿真器，针对一定数量的架构和处理器。QEMU是一个开源仿真器，支持用户和系统仿真。
+
+在用户仿真模式，QEMU能够仿真孤立的在当前平台上为其它目标编译的可执行文件。例如，用Clang编译和链接的ARM可执行文件，大概能在ARM-QEMU用户仿真器上即买即用。
+
+系统仿真器重现了整个系统的行为，包括外围设备和多核。由于仿真了完整的启动过程，需要一个操作系统。QEMU仿真的完整的开发板是存在的。用它测试裸机目标或者测试交互外围设备的程序也是理想的。
+
+QEMU支持多种架构的不同处理器变种，包括ARM、MIPS、OpenRISC、SPARC、Alpha、和MicroBlaze。你可以在http://qemu-project.org了解更多。
+
+额外的资源
+***********************************************
+
+官方的Clang文档包含非常有价值的关于Clang作为交叉编译器的信息。见http://clang.llvm.org/docs/CrossCompilation.html。
+
+总结
+***********************************************
+
+对于为其它平台开发应用程序来说，交叉编译器是一个重要的工具。Clang从设计的角度出发，让交叉编译成为可随意获得的特性，让驱动器可以动态地执行交叉编译。
+
+在这一章中，我们介绍了构成交叉编译环境的元素，以及Clang如何与之交互以产生目标可执行文件。我们还看到，Clang交叉编译器在某些场景中可能仍然是有用的。我们说明了如何编译、安装、和使用交叉编译器。
+
+在下一章中，我们将介绍Clang静态编译器，展示如何搜索大型的code base以发现常见的漏洞。

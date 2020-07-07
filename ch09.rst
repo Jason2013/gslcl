@@ -1,0 +1,679 @@
+第9章 Clang静态分析器
+##################################
+
+对于策划构建抽象的装置，人类会感到困难，因为人类难于估量工作量的大小，难于量化工作量。不出意料，由于无法处理不断增加的复杂度，软件项目具有显著的失败历史。如果编译复杂的软件需要大量的协调和组织，那么维护它恐怕是更困难的挑战。
+
+还是这样，软件越陈旧就越难维护。这典型地反映出在不同时期为之付出努力的程序员具有迥异的观点。当一个新程序员负责维护一个陈旧的软件的时候，通常的做法是简单地将不易理解的陈旧的代码部分严密地包裹起来，隔离软件，让它成为一个不可修改的程序库。
+
+软件代码如此复杂，使得程序员需要一种新的工具以帮助他们解决隐藏的漏洞。Clang静态分析器的目的，在于提供一种自动的方法，在编译之前分析大型软件代码，助人类一臂之力，以检测C、C++、或者Objective-C项目中的各种各样的常见的漏洞。在这一章中，我们将讨论以下内容：
+
+* 相比经典的编译器工具，Clang静态分析器输出的警告信息有何不同
+* 如何在简单的项目中使用Clang静态分析器
+* 如何使用scan-build工具处理大型的真实世界的项目
+* 如何扩展Clang静态分析器，加入你自己的漏洞检查器
+
+理解静态分析器的角色
+************************************
+
+在总体的LLVM设计中，如果一个项目操作原始的源代码（C/C++），它就属于Clang前端，因为根据LLVM IR恢复源代码层信息是困难的。最有意思的基于Clang的工具之一是Clang静态分析器，这个项目利用一套检查器来生成详细的漏洞报告，类似于传统的编译器警告在更小的范围所做的事情。每个检查器检测对一个具体的规则的违背。
+
+如同经典的警告，静态分析器帮助程序员在开发周期的早期发现漏洞，不需要将漏洞检测延迟到运行时。分析是在解析之后进一步编译之前做的。另一方面，这个工具可能需要很多时间处理大量代码，这就是一个很好的理由解释了为什么它没有被集成到典型的编译流程中去。举例来说，静态分析器可能独自花数个小时去处理整个LLVM源代码并运行所有的检查器。
+
+Clang静态分析器至少有两个已知的竞争者：Fortify和Coverity。Hewlett Packard （HP）提供了前者，而Synopsis提供了后者。每个工具都有它的优势和局限，但是只有Clang是开源的，这允许我们hack它，理解它如何工作，这就是这一章的目的。
+
+对比经典的警告和Clang静态分析器
+=====================================
+
+Clang静态分析器用到的算法具有指数级时间复杂度，这意味着，当被分析的程序单元增长时，处理它所需的时间可能变得非常大。如同在实践中用到的许多指数级时间复杂的算法，它是有界限的，这意味着能够通过应用问题特定的技巧减少执行时间和内存，尽管这不足以让它变成多项式时间复杂度。
+
+指数级时间复杂度的本质解释了这个工具的一个最大的局限：它一次只能分析单个编译单元，不能执行模块间分析，或者处理整个程序。尽管如此，这是一个能力很强的工具，因为它依靠符号执行引擎。
+
+为了举例说明符号执行引擎如何帮助程序员找出错综复杂的漏洞，我们先展示一个简单的漏洞，大多数编译器可以容易地检测到它并输出警告。看下面的代码：
+
+.. code-block :: c
+
+    #include <stdio.h>
+    void main() {
+      int i;
+      printf ("%d", i);
+    }
+
+在此代码中，我们用了一个未初始化的变量，会导致程序的输出依赖于我们不能控制和预测的参数，诸如程序执行之前的内存内容，导致出乎意料的程序行为。因此，一个简单的自动检查能够避免在调试中的巨大麻烦。
+
+如果你熟悉编译器分析技术，你可能已经注意到，我们可以运用前向数据流分析实现这种检查，它利用联合汇聚算子传播每个变量的状态，它是否被初始化。前向数据流分析传播关于每个基本块的变量的状态信息，从函数的第一个基本块开始，将此信息推向后继基本块。汇聚算子决定如何合并多个前面的基本块的信息。联合汇聚算子将设置基本块的属性，为每个前面的基本块集合的联合结果。
+
+在此分析中，如果一个未初始化的定义到达一处使用，我们应该触发一个编译器警告。为此目的，我们的数据流框架将为程序中每个变量赋以如下状态：
+
+* ⊥符号，当我们不知道任何关于它的信息（未知状态）
+* 已初始化符号，当我们知道变量被初始化了
+* 未初始化符号，当我们确定变量未初始化
+* Т符号，当变量可能已初始化或者未初始化（这表示我们不确定）
+
+下面的示意图显示了对我们给出的简单C程序的数据流分析：
+
+.. figure :: ch09/ch09_dataflow_analysis.png
+   :align: center
+
+我们看到，信息轻松地传播着，穿过代码行。当它到达使用i的printf语句时，框架检查关于这个变量我们知道什么，答案是未初始化，这为输出警告提供了充分的证据。
+
+由于这种数据流分析依靠多项式时间复杂度算法，它非常快。
+
+为了见识这个简单的分析如何会不准确，让我们认识Joe，一个程序员，他精通设计不可检测的错误的艺术。Joe可以非常轻松地迷惑检测器，聪明地在单独的程序路径中模糊实际的变量状态。让我们看一下Joe的一个例子。
+
+.. code-block :: c
+
+    #include <stdio.h>
+    void my_function(int unknownvalue) {
+      int schroedinger_integer;
+      if (unknownvalue)
+        schroedinger_integer = 5;
+      printf("hi");
+      if (!unknownvalue)
+        printf("%d", schroedinger_integer);
+    }
+
+现在让我们看一下我们的数据流框架如何为这个程序计算变量的状态：
+
+.. figure :: ch09/ch09_dataflow_framework.png
+   :align: center
+ 
+我们看到，在节点4处，变量第一次被初始化（粗体显示）。然而，有两条不同的路径到达节点5：节点3处的if语句的true和false分支。在一条分支，变量schroedinger_integer未被初始化，而在另一条分支，它被初始化了。汇聚算子决定如何求和前驱的结果。我们的联合算子会尝试两份数据位，将schroedinger_integer声明为T（任何一个）。
+
+当检测器检查使用schroedinger_integer的节点7的时候，不能确定代码是否有漏洞，因为根据此数据流分析，schroedinger_integer可能或可能没有被初始化。换句话说，它完全是状态重叠，已初始化或者未初始化。我们的简单检测器可以尝试警告人们一个未初始化的值被使用了，在这种情况下，它会正确地指出漏洞。但是，如果Joe的代码的上一次检查所用的条件变为if (unknownvalue)，输出警告就是一个误报，因为现在它经过了schroedinger_integer确实被初始化的路径。
+
+我们的检测器发生了丢失精确性，因为数据流框架不是路径敏感的，不能为每个可能执行的路径所发生的事情建模。
+
+误报是非常讨厌的，因为它们迷惑了程序员，受到警告的代码并不包含实际的错误，让报告实际错误的警告变得晦涩。在现实中，如果一个检测器产生了即使少量误报的警告，程序员也很可能忽略全部警告。
+
+符号化执行引擎的力量
+=======================================
+
+当简单的数据流不足以提供程序的准确信息的时候，符号化执行引擎就发挥作用了。它建造一个可到达程序状态图，能够推理全部可能的代码执行路径，当程序运行时它们可能被走到。记得调试程序时，你只会练习一个路径。当你用一个强大的虚拟机调试程序寻找内存泄漏时，例如valgrind虚拟机，也只是练习一个路径。
+
+相反地，符号化执行引擎能够练习所有路径，而不实际运行你的代码。这是非常强大的特性，但是需要大的运行时来处理程序。
+
+正如经典的数据流框架，引擎按照它将执行每个语句的顺序遍历程序，找到每个变量并赋给它们初始状态。当到达一个控制流改变的构造时，不同之处出现了：引擎将路径一分为二，继续对每个路径单独地分析。这个图称为可到达程序状态图，下面的示意图显示了一个简单的例子，揭示引擎会怎样推理Joe的代码：
+
+.. figure :: ch09/ch09_reachable_state.png
+   :align: center
+
+在此例中，第6行，第一个if语句将可到达状态图分叉为两条不同的路径：在一条路径中，unknown_value是非零，而在另一条中，unknown_value肯定是零。从此处开始，引擎会处理这个关于unknown_value的重要的约束，用它决定下一步选择哪一个分支。
+
+让我们比较可到达程序状态图和相同代码的显示控制流的图，即控制流图，附带着数据流方程提供给我们的经典的推理。看下面的示意图：
+
+.. figure :: ch09/ch09_cfg.png
+   :align: center
+
+你注意到的第一件事，是CFG可能分叉以表达控制流改变，但是它也合并节点以避免在可到达程序状态图中看到的组合爆炸。当它合并时，数据流分析可以用联合或者相交决定来合并来自不同路径的信息（第5行的节点）。如果它用联合，我们就得知schroedinger_integer既未初始化，又等于5，如我们的上个例子。如果它用相交，我们就无法得到关于schroedinger_integer的信息（未知状态）。
+
+经典的数据流分析必需合并数据，这是符号化执行引擎所没有的一个限制。这让我们能够得到精确得多的结果，和用若干输入测试你的程序所得到的不相上下，但是以更多的运行时间和内存消耗为代价。
+
+测试静态分析器
+***************************************
+
+在这一节，我们将探索如何在实践中运用Clang静态分析器。
+
+使用驱动器和使用编译器
+=======================================
+
+在测试静态分析器之前，你应该始终记得，命令行clang -cc1会直接引用编译器，而使用命令clang会触发编译器驱动器。驱动器负责精心安排编译中涉及的所有其它的LLVM程序的执行，但是它也负责提供关于你的系统的充分的参数。
+
+有些开发者喜欢直接使用编译器，这样有时候可能找不到系统头文件，或者不知道怎么配置其它参数，而只有Clang驱动器知道这些。另一方面，编译器可能设置独有的开发者选项，以让我们能够调试程序，看到内部发生的事情。让我们检验如何用两种方法检查一个源代码文件。
+
+============== =================================================================================================
+Compiler        clang –cc1 –analyze –analyzer-checker=<package> <file>
+Driver          clang --analyze -Xanalyzer -analyzerchecker=<package> <file>
+============== =================================================================================================
+
+我们用<file>表示你想要分析的源代码文件，而<package>标签让你能够选择一批具体的头文件。
+
+当使用驱动器时，注意--analyze参数会触发静态分析器。然而，-Xanalyzer参数将下一个参数直接发送给编译器，让你能够设置具体的参数。由于驱动器是中介人，在整个示例过程中，我们将直接使用编译器。此外，在我们的简单的例子中，直接使用编译器应该满足需求了。如果你感觉你需要驱动器以官方的方式使用检查器，记得使用驱动器，并首先输入-Xanalyzer选项，后面跟着我们送给编译器的每个参数。
+
+了解可用的检查器
+========================================
+
+检查器是静态分析器能够在你的代码上执行的单个分析单元。静态分析器允许你选择适合你的需求的检查器的任意子集，或者全部开启它们。
+
+如果你没有安装Clang，请看第1章（编译和安装LLVM）的安装说明。要想得到已安装的检查器的列表，运行下面的命令：
+
+.. code-block :: bash
+
+    $ clang -cc1 -analyzer-checker-help
+
+它将打印已安装的检查器的长长的列表，显示所有你可以从Clang得到的即开即用的分析。现在让我们看看-analyzer-checker-help命令的输出：
+
+.. code-block :: bash
+
+    OVERVIEW: Clang Static Analyzer Checkers List
+    
+    USAGE: -analyzer-checker <CHECKER or PACKAGE,...>
+    
+    CHECKERS:
+    alpha.core.BoolAssignment Warn about assigning non-{0,1} values
+    to Boolean variables
+
+检查器的名字服从规范的<package>.<subpackage>.<checker>形式，为使用者提供一种简单的方法以只运行一组特定的相关检查器。
+
+在下面的表中，我们列出了最重要的package，以及每个package的检查器例子的列表。
+
++------------+-------------------------------------+-----------------------------------------------------------+
+| Package    | Content                             | Examples                                                  |
+|  Name      |                                     |                                                           |
++============+=====================================+===========================================================+
+| alpha      | Checkers that are currently         | alpha.core.BoolAssignment,                                |
+|            | in development                      | alpha.security.MallocOverflow,                            |
+|            |                                     | alpha.unix.cstring.NotNullTerminated                      |
++------------+-------------------------------------+-----------------------------------------------------------+
+| core       | Basic checkers that are             | core.NullDereference,                                     |
+|            | applicable in a universal           | core.DivideZero,                                          |
+|            | context                             | core.StackAddressEscape                                   |
++------------+-------------------------------------+-----------------------------------------------------------+
+| cplusplus  | A single checker for C++            | cplusplus.NewDelete                                       |
+|            | memory allocation (others           |                                                           |
+|            | are currently in alpha)             |                                                           |
++------------+-------------------------------------+-----------------------------------------------------------+
+| debug      | Checkers that output debug          | debug.DumpCFG, debug.DumpDominators,                      |
+|            | information of the static           | debug.ViewExplodedGraph                                   |
+|            | analyzer                            |                                                           |
++------------+-------------------------------------+-----------------------------------------------------------+
+| llvm       | A single checker that checks        | llvm.Conventions                                          |
+|            | whether a code follows LLVM         |                                                           |
+|            | coding standards or not             |                                                           |
++------------+-------------------------------------+-----------------------------------------------------------+
+| osx        | Checkers that are specific          | osx.API, osx.cocoa.ClassRelease,                          |
+|            | for programs developed for          | osx.cocoa.NonNilReturnValue,                              |
+|            | Mac OS X                            | osx.coreFoundation.CFError                                |
++------------+-------------------------------------+-----------------------------------------------------------+
+| security   | Checkers for code that              | security.FloatLoopCounter,                                |
+|            | introduces security                 | security.insecureAPI.UncheckedReturn,                     |
+|            | vulnerabilities                     | security.insecureAPI.gets,                                |
+|            |                                     | security.insecureAPI.strcpy                               |
++------------+-------------------------------------+-----------------------------------------------------------+
+| unix       | Checkers that are specific          | unix.API, unix.Malloc,                                    |
+|            | to programs developed for           | unix.MallocSizeof,                                        |
+|            | UNIX systems                        | unix.MismatchedDeallocator                                |
++------------+-------------------------------------+-----------------------------------------------------------+
+
+让我们运行Joe的代码，它用于愚弄大多数编译器所用的简单分析器。首先，我们试试经典的警告方法。为此，我们简单地运行Clang驱动器，让它不进行编译，只执行语法检查：
+
+.. code-block :: bash
+
+    $ clang -fsyntax-only joe.c
+
+选项syntax-only，用于打印警告，检查语法错误，但是它没有检测到任何问题。现在，是时候测试符号化执行引擎是怎么应付的：
+
+.. code-block :: bash
+
+    $ clang -cc1 -analyze -analyzer-checker=core joe.c
+
+可选地，如果前面的命令行要求你指定头文件位置，就使用驱动器，如下：
+
+.. code-block :: bash
+
+    $ clang --analyze –Xanalyzer –analyzer-checker=core joe.c
+    ./joe.c:10:5: warning: Function call argument is an uninitialized value
+    printf("%d", schroedinger_integer);
+    ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    1 warning generated.
+
+就在当场！记住，analyzer-checker选项期待检查器的全称，或者检查器的整个package的名字。我们选择使用了core检查器的整个package，但是我们可以只用具体的检查器core.CallAndMessage，它检查函数调用的参数。
+
+注意，所有静态分析器命令都以clang -cc1 -analyzer开始；因此，如果你想知道分析器支持的所有命令，可以用下面的命令：
+
+.. code-block :: bash
+
+    $ clang -cc1 -help | grep analyzer
+
+在Xcode IDE中使用静态分析器
+=====================================
+
+如果你使用Apple Xcode IDE，你可以从其中使用静态分析器。首先你需要打开一个项目，在Product菜单中选择菜单项Analyze。你将看到，Clang静态分析器给出了漏洞发生的确切路径，让IDE能够为程序员将它高亮出来，如下面的截屏所示：
+
+.. figure :: ch09/ch09_analyzer_in_xcode.png
+   :align: center
+
+分析器能够以plist格式导出信息，然后Xcode解释此信息，并以用户友好的方式将它显示出来。
+
+在HTML中生成图形化报告
+======================================
+
+静态分析器还能够导出一个HTML文件，它图形化地指出代码中表现处危险行为的程序路径，如同Xcode所用的方式。我们还用参数-o指定一个文件夹名字，指示报告存储的地方。例如，看下面的命令行：
+
+.. code-block :: bash
+
+    $ clang -cc1 -analyze -analyzer-checker=core joe.c -o report
+
+可选地，你可以调用驱动器，如下：
+
+.. code-block :: bash
+
+    $ clang --analyze –Xanalyzer –analyzer-checker=core joe.c –o report
+
+根据这个命令行，分析器将处理joe.c，并生成一个与Xcode中所看到的类似的报告，HTML文件，放置在report文件夹中。命令完成之后，查看此文件夹并打开HTML文件，以阅读漏洞报告。你应该看到一个类似于如下截图的报告：
+
+.. figure :: ch09/ch09_html_report.png
+   :align: center
+
+处理大型项目
+=======================================
+
+如果你想用静态分析器检查一个大型项目，你大概不愿意写一个Makefile或者bash脚本，对项目的每个源文件调用分析器。静态分析器为此给出了一个便利的工具，称为scan-build。
+
+scan-build替换CC或CXX环境变量，它们定义了C/C++编译器命令，如此就介入了项目常规的build过程。它在编译之前分析每个文件，然后编译它，使得build过程或脚本能够如期望的那样继续工作。最终，它会生成HTML报告，你可以在浏览器中查看之。基本的命令行结构是很简单的：
+
+.. code-block :: bash
+
+    $ scan-build <your build command
+
+你可以自由地在scan-build之后运行任意的build命令，例如make。要想build Joe的程序，举例来说，我们不需要Makefile，可以直接提供编译命令：
+
+.. code-block :: bash
+
+    $ scan-build gcc -c joe.c -o joe.o
+
+它完成之后，你可以运行scan-view以查看漏洞报告：
+
+.. code-block :: bash
+
+    $ scan-view <output directory given by scan-build>
+
+scan-build所打印的最后一行，给出了运行scan-view所需要的参数。它会引用一个临时文件夹，那里存放着所有生成的报告。你应该看到一个格式优美的网页，列出了每个源文件的错误报告，如下面的截屏所示：
+
+.. figure :: ch09/ch09_error_report.png
+   :align: center
+
+真实世界的例子——找到Apache的漏洞
+-------------------------------------------
+
+在此例中，我们将检验在大型项目中检查漏洞是何等容易。为此，在http://httpd.apache.org/download.cgi下载最新的Apache HTTP Server源代码包。在写作的时候，它的版本是2.4.9。在我们的例子中，我们将通过控制台下载它，并在当前文件夹解压文件：
+
+.. code-block :: bash
+
+    $ wget http://archive.apache.org/dist/httpd/httpd-2.4.9.tar.bz2
+    $ tar -xjvf httpd-2.4.9.tar.bz2
+
+我们将利用scan-build检查这个源代码库。为此，我们需要重复生成build脚本的步骤。注意，你需要所有必需的依赖库，以编译Apache项目。确认已经有了所有依赖库之后，执行下面的命令序列：
+
+.. code-block :: bash
+
+    $ mkdir obj
+    $ cd obj
+    $ scan-build ../httpd-2.4.9/configure -prefix=$(pwd)/../install
+
+我们用prefix参数指示这个项目新的安装路径，如此就不需要这台机器的管理员权限了。不过，如果你不打算实际安装Apache，就不需要提供额外的参数，只要你不运行make install。在我们的例子中，我们将安装路径定义为文件夹install，它将在我们下载压缩源文件的相同目录中被创建。注意，我们还在命令前面加上scan-build，它会覆写CC和CXX环境变量。
+
+在configure脚本创建所有Makefile之后，就是启动实际的build过程的时候了。我们用scan-build拦截make命令，而不是单独执行它：
+
+.. code-block :: bash
+
+    $ scan-build make
+
+由于Apache代码非常多，完成分析花了几分钟，找到了82个漏洞。下面是scan-view报告的一个例子：
+
+.. figure :: ch09/ch09_scanview_report.png
+   :align: center
+
+在臭名昭著的心脏击穿漏洞击中了所有OpenSSL实现之后——这个问题引起了极大的关注——有趣的是，我们看到静态分析器仍然能够在Apache SSL的实现文件modules/ssl/ssl_util.c和modules/ssl/ssl_engine_config.c中找到六个疑似漏洞。请注意这些点可能存在于实践中从未被执行的路径内，可能不是真正的漏洞，因为静态分析器工作在一个有限的强度范围，为了在可接受的时间帧内完成分析。因此，我们没有断言它们是真正的漏洞。我们只是在此给出了一个例子来说明一个赋值是废物或者未定义的情况:
+
+.. figure :: ch09/ch09_assign_value.png
+   :align: center
+
+在这个例子中，静态分析器向我们表明，有一个执行路径最后给dc->nVerifyClient赋了一个未定义的值。这个路径的部分经历了对ssl_cmd_verify_parse()函数的调用，这显示出分析器在一个相同的编译模块内检查复杂的函数间路径的能力。在这个辅助函数中，静态分析器显示了在一个路径中mode没有被赋以任何值，因而它是未初始化的。
+
+.. note ::
+
+    之所以这可能不是一个真正的漏洞，是因为ssl_cmd_verify_parse()的代码可能处理了输入cmd_parms的所有情况，这些情况在实际的程序中发生了（注意上下文依赖），在所有情况下正确地初始化了mode。scan-build所发现的是，这个模块在孤立状态下可能会执行有漏洞的路径，但是我们没有证据得知这个模块的使用者会用到有漏洞的输入。静态分析器不足够强大，无法在整个项目的上下文中分析这个模块，因为这样的分析需要花费不切实际的时间（记得算法的指数复杂度）。
+
+这个路径有11步，而我们在Apache中发现的最长的路径有42步。这个路径出现在modules/generators/mod_cgid.c模块中，它违反了一个标准C API调用：它以一个null指针参数调用strlen()函数。
+
+如果你好奇到想看所有这些报告的细节，不要犹豫亲自运行命令。
+
+用你自己的检查器扩展静态分析器
+***********************************************
+
+由于它的设计，我们可以轻易地以定制的检查器扩展静态分析器。记住静态分析器和它的检查器一样好，如果你想分析是否有代码以非预期的方式使用你的某个API，你需要学习如何将这个域特定的知识嵌入到Clang静态分析器中。
+
+熟悉项目的架构
+===============================================
+
+Clang静态分析器的源代码在llvm/tools/clang中。头文件在include/clang/StaticAnalyzer中，源代码在lib/StaticAnalyzer中。查看文件夹的内容，你会发现项目被划分为三个不同的子文件夹：Checkers，Core，和Frontend。
+
+Core的任务是在源代码层次模拟程序的执行，利用一个visitor pattern，并在每个程序点（在重要的语句之前或之后）调用注册的检查器，以强制一个给定的不变量。例如，如果你的检查器确认同一分配的内存区域不会被释放两次，它会观察malloc()和free()，当它检测到重复释放时会生成一个漏洞报告。
+
+符号引擎不能以精确的程序值模拟程序，如你在一个程序运行时看到的值。如果你让使用者输入一个整数值，你肯定会知道，在一次给定的运行中，举例来说，这个值是5。符号引擎的威力在于对程序的每个可能的结果推断发生了什么，为了完成这个宏伟的目标，它考察符号（SVals）而不是具体的值。一个符号可能代表任意的整数、浮点数或者甚至一个完全未知的数。它对值知道得越多，它就越强大。
+
+有三个重要得数据结构：ProgramState，ProgramPoint，和ExplodedGraph；它们是理解项目实现的钥匙。第一个代表当前执行的关于当前状态的上下文。例如，当分析Joe的代码时，它会注明某个给定的变量的数值是5。第二个代表程序流中的一个具体的点，在一个语句的前面或者后面，例如，在给一个整数变量赋值5的后面。最后一个代表整个可达程序状态的图。另外，这个图的节点由ProgramState和ProgramPoint的元组表示的，这意味着，每个程序点都有一个具体的状态和它相关联。例如，给一个整数变量赋值5之后的点，由一个状态将这个变量和数字5联系起来。
+
+正如本章的开头已经指出的那样，ExplodedGraph，或者说，可达状态图，表示对经典CFG的一个重要的展开。注意，一个具有两个串联的而不是嵌套的if的小的CFG，在可达状态图的表示中，会爆炸成四个不同的路径——组合的扩展。为了节省空间，这个图会被折叠，这意味着，如果你创建一个节点，它表示的程序点以及状态和另一个节点的相同，就不会分配新的节点，而是重用这个已有的节点，可能建造回路。为了实现这个行为，ExplodedNode继承了LLVM库的超类llvm::FoldingSetNode。LLVM库已经为这种情形引入了一个公共的类，因为在表示程序时，折叠在编译器的中间端和后端中被广泛使用。
+
+静态分析器的总体设计可以被划分成以下部分：引擎，它跟随仿真路径并管理其它组件；状态管理器，管理ProgramState对象；约束管理器，负责推断由跟随给定程序路径引起的对ProgramState的约束；以及存储管理器，管理程序存储模型。
+
+分析器的另一个重要的方面是，如何建模内存的行为，当它沿着每条路径模拟程序的执行时。对于如C和C++这样的语言，这是相当具有挑战的，因为它们为程序员提供了多种访问相同内存片段的方式，从而产生别名。
+
+分析器实现了一种由Xu等人的论文所描述的区域内存模型（查看本章末尾的引用），它甚至能够区分一个数组的每个元素的状态。Xu等人提出了一种内存区域的层级结构，在其中，举例来说，数组元素是数组的子区域，数组是堆栈的子区域。C中的每个lvalue，或者换句话说，每个变量或者引用，有一个对应的区域建模了它们所作用的内存片段。另一方面，每个内存区域的内容，是通过绑定建模的。每个绑定将一个符号值和一个内存区域关联起来。这里有太多的信息需要吸收，所以让我们以一种可能的最佳方式消化它——编写代码。
+
+编写你自己的检查器
+================================================
+
+考虑你在开发一个特定的嵌入式软件，它控制着一个核反应堆，依靠具有两个基本调用的API：turnReactorOn()和SCRAM()（关闭核反应堆）。核反应堆包含燃料和控制杆，前者是核反应发生的地方，后者包含中子吸收器，它能减缓核反应，使核反应堆保持发电厂的规模，而不是变成原子弹。
+
+你的客户告知你，调用SCRAM()两次可能导致控制杆被卡住，调用turnReactorOn()两次会导致核反应失去控制。这个API具有严格的使用规则，你的任务是，在代码成为产品之前，审查一个大型的代码库，确保它没有违反这些规则：
+
+•	不存在代码路径在不介入turnReactorOn()的情况下调用SCRAM()超过一次
+•	不存在代码路径在不介入SCRAM()的情况下调用trunRactionOn()超过一次
+
+作为一个例子，考虑下面的代码：
+
+.. code-block :: c
+
+    int SCRAM();
+    int turnRactionOn();
+    
+    void test_loop(int wrongTemperature, int restart) {
+      turnRactionOn();
+      if (wrongTemperature) {
+        SCRAM();
+      }
+      if (restart) {
+        SCRAM();
+      }
+      turnReactorOn();
+      // code to keep the reactor working
+      SCRAM();
+    }
+
+如果wrongTemperature和restart都不是0，这份代码违反了API，导致调用SCRAM()两次，其间没有介入trunReactorOn()。如果这两个参数都是0，它也违反了API，因为这样的话，代码会调用turnReactorOn()两次，其间没有介入SCRAM()调用。
+
+用定制的检查器解决问题
+-------------------------------------------------
+
+你要么可以尝试用肉眼检查代码，这是非常枯燥并且易出错的，要么使用一个像Clang静态分析器这样的工具。问题在于，它不理解核电厂API。我们将通过实现一个特殊的检查器客服它。
+
+第一步，我们要为我们的状态模型建立概念，关于我们想要在不同程序状态间传播的信息。在这个问题中，我们关切反应堆是开启的还是关闭的。我们可能不知道它是开启的还是关闭的；因此，我们的状态模型包含三个可能的状态：未知，开启，和关闭。
+
+现在，关于我们的检查器如何处理状态，我们有一个优雅的主意。
+
+编写状态类
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+让我们付诸实践。我们的代码将会以SimpleStreamChecker.cpp为基础，这是Clang代码树中可找到的一个简单的检查器。
+
+在lib/StaticAnalyzer/Checkers中，我们应该创建一个新的文件，ReactorChecker.cpp，并开始编写我们自己的类，这个类表示我们在跟踪的时候所关心的状态：
+
+.. code-block :: cpp
+
+    #include "ClangSACheckers.h"
+    #include "clang/StaticAnalyzer/Core/BugReporter/BugType.h"
+    #include "clang/StaticAnalyzer/Core/Checker.h"
+    #include "clang/StaticAnalyzer/Core/PathSensitive/CallEvent.h"
+    #include "clang/StaticAnalyzer/Core/PathSensitive/CheckerContext.h"
+    using namespace clang;
+    using namespace ento;
+    class ReactorState {
+    private:
+      enum Kind {On, Off} K;
+    public:
+      ReactorState(unsigned Ink) : K((Kind) InK) {}
+      bool isOn() const { return K == On; }
+      bool isOff() const { return K == Off; }
+      static unsigned getOn() { return (unsigned) On; }
+      static unsigned getOff() { return (unsigned) Off; }
+      bool operator == (const ReactorState &X) const {
+        return K == X.K;
+      }
+      void Profile(llvm::FoldingSetNodeID &ID) const {
+        ID.AddInteger(K);
+      }
+    };
+
+我们的类的数据部分限制为Kind的单个实例。注意ProgramState类会管理我们编写的状态信息。
+
+理解ProgramState的不变性
+::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+关于ProgramState的一个有趣的经验是，它生来就是不可变的。一旦建造出来，它就应该绝不改变：它代表在一个给定的执行路径中的一个给定的程序点的被计算出来的状态。不同于处理CFG的数据流分析，在这种情况下，我们处理可达程序状态图，对于不同的一对程序点和状态，它都有不同的节点。以这种方式，如果程序发生循环，引擎会创建一个完全新的路径，这个路径记录了关于这次新的迭代的关联信息。相反地，在数据流分析中，一个循环会导致循环体的状态被新的信息更新，直到到达一个固定的点。
+
+然而，正如之前强调的那样，一旦符号引擎到达一个表示一个给定循环体的相同程序点的节点，这个点具有相同的状态，它会认为在这个路径中没有新的信息需要处理，就重用这个节点而不是新建一个。另一方面，如果你的循环有一个循环体在不断地以新的信息更新状态，你就很快会达到符号引擎的限度：它会在模拟预定数目的迭代后放弃这个路径，这是一个可配置的数目，你可以在启动这个工具时设置它。
+
+剖析代码
+::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+由于状态一旦创建就不可变，我们的ReactorState类不需要setter，或者用于修改其状态的类成员函数，但是我们确实需要构造器。这就是ReactorState(unsigned InK)构造器的目的，它接受一个编码当前反应器状态的整数作为输入。
+
+最后，Profile函数是ExplodeNode的结果，它是FoldingSetNode的子类。所有子类必须提供这样的方法，以协助LLVM折叠追踪节点的状态并判断两个节点是否相同（这时它们会被折叠）。因此，我们的Profile函数会说明K，一个数字，给出我们的状态。
+
+你可以用任何以Add开头的FoldingSetNodeID成员函数来告知独特的位，这些位用于识别这个对象的实例（查看llvm/ADT/FoldingSet.h）。在我们的例子中，我用了AddInteger()。
+
+定义检查器子类
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+现在，是时候声明我们的Checker子类了：
+
+.. code-block :: cpp
+
+    class ReactorChecker : public Checker<check::PostCall> { 
+      mutable IdentifierInfo *IIturnReactorOn, *IISCRAM; 
+      OwningPtr<BugType> DoubleSCRAMBugType; 
+      OwningPtr<BugType> DoubleONBugType; 
+      void initIdentifierInfo(ASTContext &Ctx) const; 
+      void reportDoubleSCRAM(const CallEvent &Call, CheckerContext &C) const; 
+      void reportDoubleON(const CallEvent &Call, CheckerContext &C) const; 
+    public: 
+      ReactorChecker(); 
+      /// Process turnReactorOn and SCRAM 
+      void checkPostCall(const CallEvent &Call, CheckerContext &C) const; 
+    };
+
+.. note ::
+
+    注意Clang版本——从Clang 3.5开始，OwingPtr<>模板被淘汰，而采用标准的C++ std::unique_ptr<>模板。这两个模板都提供了智能指针的实现。
+
+我们的类的第一行表明，它是一个指定了模板参数的Checker的子类。对于这个类，可以使用多个模板参数，它们表示你的检查器在巡查时所感兴趣的程序点。技术上来说，这些模板参数用于派生一个定制的Checker类，这个类是所有被指定为参数的类的子类。这意味着，对于我们的案例，我们的检查器会从基类继承PostCall。如此继承是用于实现巡查模式，它只会针对我们感兴趣的对象调用我们，因此，我们的类必须实现成员函数checkPostCall。
+
+你也许对登记你的检查器感兴趣，以巡查广泛多样的程序点类型（检查CheckerDocumentation.cpp）。在我们的案例中，我们关注在调用到达之后立即访问程序点，因为我们想在某个核电厂API函数被调用之后，记录状态的改变。
+
+这些成员函数使用了const关键字，这遵从其设计，它依赖无状态的检查器。然而，我们确实想贮存获取IdendifierInfo对象的结果，它们代表符号turnReactorOn()和SCRAM()。这样，我们使用mutable关键字，创建它以绕过const的限制。
+
+.. note ::
+
+    谨慎使用mutable关键字。我们不是在损害检查器的设计，因为我们只是贮存结果以加速第二次调用到达我们的检查器之后的计算，但是概念上我们的检查器仍然是无状态的。mutable关键字应该只用于互斥或者像这样的贮存的场景。
+
+我们还想告知Clang基础设施，我们在处理一种新的漏洞类型。为此，我们必须保存新的BugType实例，新的漏洞各保存一个，我们打算报告这些漏洞：漏洞发生在程序员调用SCRAM()两次，以及发生在程序员调用turnReactorOn()两次。我们还用OwningPtr LLVM类封装我们的对象，它是一种自动指针的实现，用于自动地释放我们的对象，一旦我们的ReactorChecker对象被销毁。
+
+你应该封装我们刚编写的两个类，ReactorState和ReactorChecker，封装在一个匿名名字空间中。这会阻止我们的链接器导出这两个数据结构，我们知道它们只在本地使用。
+
+编写寄存器宏
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+在深入学习类的实现之前，我们必须调用一个宏来展开ProgramState实例，分析器引擎用它处理我们定制的状态：
+
+.. code-block :: bash
+
+REGISTER_MAP_WITH_PROGRAMSTATE(RS, int, ReactorState)
+
+注意，这个宏的末尾没有分号。这为每个ProgramState实例关联一个新的map。第一个参数可以是任意名字，此后你将用它引用这个数据，第二个参数是map键值的类型，第三个参数是我们要存储的对象的类型（此处它是ReactorState类）。
+
+检查器常常用map存储它们的状态，因为给特定的资源关联新的状态是常见的，例如，在本章开头的检测器中，每个变量的状态，初始化的或未初始化的。在这种情况下，map的键值会是变量的名字，存储的值会是一个定制的类，这个类建模了状态的未初始化或初始化。对于另外的向程序状态登记信息的方式，查看CheckerContext.h中的宏定义。
+
+注意，我们并不真正地需要一个map，因为我们会总是为每个程序点只存储一个状态。因此，我们会总是用键值1访问我们的map。
+
+实现检查器子类
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+我们的检查器类的构造器实现如下：
+
+.. code-block :: cpp
+
+    ReactorChecker::ReactorChecker() : IIturnReactorOn(0), IISCRAM(0) {
+      // Initialize the bug types.
+      DoubleSCRAMBugType.reset(new BugType(“Double SCRAM”, “Nuclear Reactor API Error”));
+      DoubleONBugType.reset(new BugType(“Double ON”, “Nuclear Reactor API Error”));
+    }
+
+.. note ::
+
+    注意Clang版本——从Clang 3.5开始，我们的BugType构造器调用需要变为BugType(this, (“Double SCRAM”, “Nuclear Reactor API Error”)和BugType(this, “Double ON”, “Nuclear Reactor API Error”)，就是添加this关键字作为第一个参数。
+
+我们的构造器实例化了一个新的BugType对象，利用OwningPtr的reset()成员函数，我们给出了关于新的漏洞种类的描述。我们还初始化了IdentifierInfo指针。接着，是时候定义我们的辅助函数以贮存这些指针的结果：
+
+.. code-block :: cpp
+
+    void ReactorChecker::initIdentifierInfo(ASTContext &Ctx) const {
+      if (IIturnReactorOn)
+        return;
+      IIturnReactorOn = &Ctx.Idents.get("turnReactorOn");
+      IISCRAM = &Ctx.Idents.get("SCRAM");
+    }
+
+ASTContext对象保存了特定的AST节点，这些节点包含用户程序用到的类型和声明，我们可以用它找到我们在监听时所感兴趣的函数的准确的标识符。现在，我们实现巡查器模式函数，checkPostCall。记住，它是一个const函数，应该不修改检查器的状态：
+
+.. code-block :: cpp
+
+    void ReactorChecker::checkPostCall(const CallEvent &Call,
+                                  CheckerContext &C) const {
+      initIdentifierInfo(C.getASTContext());
+      if (!Call.isGlobalCFunction())
+        return;
+      if (Call.getCalleeIdentifier() == IIturnReactorOn) {
+        ProgramStateRef State = C.getState();
+        const ReactorState *S = State->get<RS>(1);
+        if (S && S->isOn()) {
+          reportDoubleON(Call, C);
+          return;
+        }
+        State = State->set<RS>(1, ReactorState::getOn());
+        C.addTransition(State);
+        return;
+      }
+      if (Call.getCalleeIdentifier() == IISCRAM) {
+        ProgramStateRef State = C.getState();
+        const ReactorState *S = State->get<RS>(1);
+        if (S && S->isOff()) {
+          reportDoubleSCRAM(Call, C);
+          return;
+        }
+        State = State->set<RS>(1, ReactorState::getOff());
+        C.addTransition(State);
+        return;
+      }
+    }
+
+第一个参数是CallEvent类型，它持有一个函数的信息，程序就在这个程序点之前调用了这个函数（查看CallEvent.h），因为我们登记了一个调用后巡查器。第二个参数是CheckerContext类型，它是在这个程序点的当前状态的唯一信息来源，因为我们的检查器必须是无状态的。我们用它获取ASTContext，初始化Identifier对象，检查我们监听的函数有赖于它们。我们询问CallEvent对象，以检查它是否调用了trunReactorOn()函数。如果是，我们需要进行状态转移，转移到开启状态。
+
+在转移状态之前，我们首先检查状态是否已经是开启的，在这种情况下，就存在漏洞。注意在State->get<RS>(1)语句中，RS只是我们在登记程序状态的新特征时所给的名字，1是固定的整数，总是用它访问map的位置。虽然在这种情况下我们实际上不需要map，但是通过使用map，你将能够轻松地扩展我们的检查器以监听更加复杂的多个状态，如果你想的话。
+
+我们将我们存储的状态恢复为一个const指针，因为我们在处理的到达这个程序点的信息是不可变的。首先，有必要检查它是否为空的引用，这表示我们不知道反应堆是开启的还是关闭的。如果它不是空的，我们检查它是否为开启的，为阳性的状况，我们就放弃进一步的分析而报告一个漏洞。对于其它情况，我们通过ProgramStateRef set成员函数新建一个状态，并将这个新的状态传送给addTransition()成员函数，它会记录信息以在ExplodedGraph中创建一条新的边。只有在状态实际改变时，才会创建这样的边。在处理SCRAM的时候，我们用了类似的逻辑。
+
+漏洞报告成员函数的代码如下所示：
+
+.. code-block :: cpp
+
+    void ReactorChecker::reportDoubleON(const CallEvent &Call,
+                                    CheckerContext &C) const {
+      ExplodedNode *ErrNode = C.generateSink();
+      if (!ErrNode)
+        return;
+      BugReport *R = new BugReport(*DoubleONBugType,
+        "Turned on the reactor two times", ErrNode);
+      R->addRange(Call.getSourceRange());
+      C.emitReport(R);
+    }
+    void ReactorChecker::reportDoubleSCRAM(const CallEvent &Call,
+                                        CheckerContext &C) const {
+      ExplodedNode *ErrNode = C.generateSink();
+      if (!ErrNode)
+        return;
+      BugReport *R = new BugReport(*DoubleSCRAMBugType,
+        "Called a SCRAM procedure twice", ErrNode);
+      R->addRange(Call.getSourceRange());
+      C.emitReport(R);
+    }
+
+我们的第一个动作是生成一个sink节点，在可达程序状态中，它意味着我们在这个路径上遇到一个严重的漏洞，我们不想继续分析这个路径。下面几行创建一个BugReport对象，报告我们找到了一个新的漏洞，漏洞的类型是DoubleOnBugType，漏洞描述可以任意写，提供我们刚刚建造的出错节点。我们还用到了addRange()成员函数，它会高亮出现漏洞的代码，显示给用户。
+
+添加登记代码
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+为了让静态分析器工具认出我们的新检查器，我们需要在我们的源代码中定义一个登记函数，然后在一个TableGen文件中添加我们的检查器的描述。登记函数如下所示：
+
+.. code-block :: cpp
+
+    void ento::registerReactorChecker(CheckerManager &mgr) {
+      mgr.registerChecker<ReactorChecker>();
+    }
+
+TableGen文件有一个检查器的表。它位于lib/StaticAnalyzer/Checkers/Checkers.td，相对于Clang源代码文件夹。在编辑这个文件之前，我们需要选择一个包以放置我们的检查器。我们会把它放在alpha.powerplant中。这个包还不存在，因此我们要创建它。打开Checkers.td，在所有已存在的包定义之后添加一个新的定义：
+
+.. code-block :: cpp
+
+    def  PowerPlantAlpha : Package<”powerplant”>, InPackage<Alpha>;
+
+下面，添加我们新写的检查器：
+
+.. code-block :: cpp
+
+    let ParentPackage = PowerPlantAlpha in {
+    
+    def ReactorChecker : Checker<”ReactorChecker”>,
+      HelperText<”Check for misuses of the nuclear power plant API”>,
+      DescFile<”ReactorChecker.cpp”>;
+    
+    } // end “alpha.powerplant”
+
+如果你用CMake build Clang，你应该将你的新源文件添加到lib/StaticAnalyzer/Checkers/CMakeLists.txt。如果你用GNU自动工具配置脚本以build Clang，你就不需要修改任何其它文件，因为LLVM Makefile会扫描Checkers文件夹中的新源代码文件，并在静态分析器的检查器库中链接它们。
+
+编译和测试
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+进入你build LLVM和Clang的文件夹，运行make。现在build系统会检测到你的新代码，build它，并向Clang静态分析器链接它。当你完成build之后，命令行clang -cc1 -analyzer-checker-help就应该列出我们的新检查器为一个合法的选项。
+
+下面给出了一个我们的检查器的测试案例，managereactor.c（和前面给出的相同）：
+
+.. code-block :: c
+
+    int SCRAM();
+    int turnReactorOn();
+    
+    void test_loop(int wrongTemperature, int restart) {
+      turnReactorOn();
+      if (wrongTemperature) {
+        SCRAM();
+      }
+      if (restart) {
+        SCRAM();
+      }
+      turnReactorOn();
+      // code to keep the reactor working
+      SCRAM();
+    }
+
+要用我们的新检查器分析以上代码，我们使用下面的命令：
+
+.. code-block :: bash
+
+    $ clang –analyze -Xanalyzer -analyzer-check=alpha.powerplant mamagereactor.c
+
+检查器会显示它能发现为错误的路径并退出。如果你请求一个HTML报告，你就会看到一个漏洞报告，类似下面的截屏所示：
+
+.. figure :: ch09/ch09_checker_report.png
+   :align: center
+
+现在你的任务完成了：你成功地开发了一个程序来自动检查对一个特定的路径敏感的API的违规。如果你愿意，你可以查看其它检查器的实现，学习更多处理更复杂场景的知识，或者查看下一节列出的资源以获得更多信息。
+
+更多资源
+***********************************************
+
+你可以查看下面的资源以了解更多的项目和其它的信息：
+
+•	http://clang-analyzer.llvm.org：Clang静态分析器项目的网页。
+•	http://clang-analyzer.llvm.org/checker_dev_manual.html：为想要开发新的检查器的人准备的有用的手册。
+•	http://lcs.ios.ac.cn/~xzx/memmodel.pdf：论文A Memory Model for Static Analysis of C，作者Zhongxing Xu, Ted Kremenek, Jian Zhang。它从理论层面详细解释了分析器核心所实现的内存模型。
+•	http://clang.llvm.org/doxygen/annotated.html：Clang doxygen文档。
+•	http://llvm.org/devmtg/2012-11/videos/Zaks-Rose-Checker24Hours.mp4：由Anna Zaks和Jordan Rose在2012 LLVM开发者会议上作的一个讲座，解释如何快速建造检查器，他们是分析器开发者。
+
+总结
+***********************************************
+
+在本章中，我们探讨了Clang静态分析器如何不同于运行在编译器前端的简单漏洞检测工具。我们以例子说明了静态分析器是更精确的，解释了在精确性和计算时间之间的权衡，需要指数级时间的静态分析算法是不适合集成到常规的编译器管线的，因为它完成分析所需的时间是不可接受的。我们还介绍了如何用命令行接口对简单项目运行静态分析器，以及用辅助工具scan-build来分析大型的项目。最后我们介绍了如何用我们自己的路径敏感的漏洞检查器扩展静态分析器。
+
+在下一章，我们将介绍建造在LibTooling基础之上的Clang工具，它简化了建造代码重构工具的过程。
