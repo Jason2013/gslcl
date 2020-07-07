@@ -24,7 +24,8 @@
 
 下图说明了LLVM和GCC是如何为不同的目标编译一份源代码的；前者动态地为截然不同的处理器生成代码，而后者需要为每个处理器安装一个不同的交叉编译器。
 
-（图）
+.. figure :: ch08/ch08_gcc_llvm.png
+   :align: center
 
 你也可以编译一个专用的Clang交叉编译器，像GCC那样。虽然这种选择要付出更多工夫以编译安装一个单独的Clang/LLVM，但是它的命令行接口更易于使用。在配置的时候，用户可以提供固定的指向目标库、头文件、汇编器、和链接器的路径，避免每次执行交叉编译时都要输入大量的命令行参数。
 
@@ -45,13 +46,28 @@
 
 下面的表格列出了每个LLVM三元组字段的可能选项；<sub>字段没有包含在其中，因为它表示架构变种，例如armv7架构的v7。查看<llvm_source>/include/llvm/ADT/Triple.h，了解三元组详细内容。
 
-（表）
++-------------------------+--------------------+----------------------------------+------------------------+
+| Architecture (<arch>)   | Vendor (<vendor>)  | Operating system (<sys>)         | Environment (<abi>)    |
++=========================+====================+==================================+========================+
+| arm, aarch64, hexagon,  | unknown,           | unknown, auroraux,               | unknown,               |
+| mips, mipsel, mips64,   | apple, pc,         | cygwin, darwin,                  | gnu,                   |
+| mips64el, msp430,       | scei, bgp,         | dragonfly, freebsd,              | gnueabihf,             |
+| ppc, ppc64, ppc64le,    | bgq, fsl,          | ios, kfreebsd, linux,            | gnueabi,               |
+| r600, sparc, sparcv9,   | ibm, and           | lv2, macosx, mingw32,            | gnux32,                |
+| systemz, tce, thumb,    | nvidia             | netbsd, openbsd,                 | eabi, macho,           |
+| x86, x86_64, xcore,     |                    | solaris, win32, haiku,           | android, and           |
+| nvptx, nvptx64, le32,   |                    | minix, rtems, nacl, cnk,         | elf                    |
+| amdil, spir, and        |                    | bitrig, aix, cuda, and           |                        |
+| spir64                  |                    | nvcl                             |                        |
++-------------------------+--------------------+----------------------------------+------------------------+
+
 
 注意，不是所有arch、vendor、sys、和abi组合是有效的。每种架构支持有限数量的组合。
 
 下图说明了一种ARM交叉编译器的概念，它在x86上被编译，在x86上运行，生成ARM可执行文件。好奇的读者可能想知道，如果Host和Build平台是不同的会怎样。这种组合形成加拿大型交叉编译器，过程稍微复杂一点，要求下图中的深色Compiler框是另一个交叉编译器，而不是本地编译器。加拿大型交叉这个名字是根据这样的事实提出的，即在当时名字提出时加拿大有三个政党，以及加拿大型交叉编译器用到三个平台。举例来说，如果你将交叉编译器发布给用户，他们期望支持的平台不同于你自己的。
 
-（图）
+.. figure :: ch08/ch08_arm_cross_compiler.png
+   :align: center
 
 准备工具链
 *********************************
@@ -60,7 +76,8 @@
 
 为了生成或者使用你的交叉编译器，需要知道工具链组件，以及它们之间如何交互，这是非常重要的。下图显示了成功交叉编译所必需的主要工具链组件，而后面的小节将描述每个组件：
 
-（图）
+.. figure :: ch08/ch08_toolchain.png
+   :align: center
 
 标准C和C++库
 =================================

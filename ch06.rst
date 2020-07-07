@@ -15,6 +15,9 @@
 
 将LLVM IR转换为目标汇编代码需要经历若干步骤。IR被变换为后端友好的指令、函数、全局变量的表示。这种表示随着程序经历各种后端阶段而变化，越来越接近实际的目标指令。下图给出了必需的步骤的概观，从LLVM IR到目标代码或者汇编，而如白色框所指示的，可以执行非必需的优化Pass以进一步改进翻译的质量。
 
+.. figure :: ch06/ch06_overview.png
+   :align: center
+
 这个翻译流水线由后端的多个阶段组成，它们表示为浅灰色的中间框。它们在内部也称为super pass，因为它们由若干小的Pass实现。它们和白色框的区别在于，前者这些Pass对后端的成功很关键，而后者对于提高所生成的代码的效率更重要。下面我们简略描述上图所说明的代码生成的各个阶段：
 
 指令选择（Instruction Selection）过程将内存中的IR表示变换为目标特定的SelectionDAG节点。起初，这个过程将三地址结构的LLVM IR变换为DAG（Directed Acyclic Graph）形式，这是有向无环图。每个DAG能够表示单一基本块的计算，这意味着每个基本块关联不同的DAG。典型地节点表示指令，而边编码了它们之间的数据流依赖，但不限于此。转换为DAG是重要的，这让LLVM代码生成程序库能够运用基于树的模式匹配指令选择算法，它经过一些调整，也能工作在DAG上（而不仅仅是树）。到这个过程结束时，DAG已将它所有的LLVM IR节点变换为目标机器节点，这些节点表示机器指令而不是LLVM指令。
@@ -327,7 +330,8 @@ SelectionDAG类
 
 SelectionDAG类（class）用一个DAG表示每个基本块的计算，每个SDNode对应一个指令或者操作数。下图由LLVM生成，展示了sum.bc的DAG，它只有一个函数和一个基本块：
 
-（图）
+.. figure :: ch06/ch06_selection_dag.png
+   :align: center
 
 DAG的边通过use-def关系强制它的操作之间的顺序。如果节点B（例如，add）有一条出去的边到节点A（例如，Constant<-10>），这意味着节点A定义了一个值（32位整数-10），而节点B使用它（作为加法的一个操作数）。因此，A操作必须在B之前执行。黑色箭头表示常规连线，指示数据流依赖，正如例子add。虚线蓝色箭头表示非数据流链，用以强制两条指令的顺序，否则它们就是不相关的，例如，load和store指令必须固定它们原始的程序顺序，如果它们访问相同的内存位置。在前面的图中，我们知道CopyToReg操作必须在X86ISD::RET_FLAG之前发生，由于虚线蓝色箭头。红色连线保证它相邻的节点必须粘合在一起，这意味着它们必须紧挨着执行，它们之间不可有其它指令。例如，我们指定相同的节点CopyToReg和X86ISD::RET_FLAG必须安排为紧挨着，由于红色的连线。
 
@@ -352,10 +356,10 @@ SelectionDAG对象有一个特别的标记基本块入口的EntryToken，它提�
 低层化
 =========================
 
-
 在前面的子小节中，我们展示的图中目标特定的和目标无关的节点是并存的。你可能会问自己，一些目标特定的节点怎么已经在SelectionDAG中了，如果这是指令选择的输入？为了理解这个问题，我们首先在下图中给出所有先于指令选择的步骤的全局图，在左上角从LLVM IR步骤开始：
 
-（图）
+.. figure :: ch06/ch06_lowering.png
+   :align: center
 
 首先，一个SelectionDAGBuilder实例（详情见SelectionDAGISel.cpp）访问每个函数，为每个基本块创建一个SelectionDAG对象。在此过程期间，一些特殊的IR指令例如call和ret已经要求目标特定的语句——例如，如何传递调用参数和如何从一个函数返回——被转换为SelectionDAG节点。为了解决这个问题，TargetLowering class中的算法第一次被使用。这个class是每个目标都必须实现的抽象接口，但是还有大量共用的功能被所有后端所使用。
 
@@ -403,7 +407,8 @@ DAG到DAG的指令选择的目的，是利用模式匹配将目标无关的节�
 
     注意，三种指令表示类型可能在同一个DAG中并存：通用的LLVM ISD节点比如ISD::ADD，目标特定的<Target>ISD节点比如X86ISD::REG_FLAG，目标物理指令比如X86::ADD32ri8。
 
-（图）
+.. figure :: ch06/ch06_dag2dag.png
+   :align: center
 
 模式匹配
 -----------------------------
@@ -434,7 +439,8 @@ Select()方法允许用两种方式来匹配物理指令。最直接的方式是
 
 这里，N是待匹配的SDNode参数，在此上下文中，N等于ISD::MULHU。因为在这个case语句之前已经作了细致的检查，这里生成SPARC特定的opcode以替换ISD::MULHU。为此，我们通过调用CurDAG->getMachineNode()以SP::UMULrr创建一个物理指令节点。接着，通过CurDAG->SelectNodeTo()，我们创建一个SP::RDY指令节点，并将指向ISD::MULHU的结果的所有use（引用）改变为指向SP::RDY的结果。下图显示了这个例子指令选择前后的SelectionDAG结构。前面的C++代码片段是lib/Target/Sparc/SparcISelDAGToDAG.cpp中的代码的简化版本。
 
-（图）
+.. figure :: ch06/ch06_pattern_matching.png
+   :align: center
 
 可视化指令选择过程
 ==============================
@@ -565,7 +571,8 @@ default分配器被映射为这四种方法的其中之一，根据当前的优�
 
 虽然寄存器分配器在一个单一的Pass中实现，不管选择何种算法，但是它仍然依赖其它的分析，这构成了分配器框架。分配器框架用到一些Pass，这里我们介绍寄存器合并器和寄存器重写，解释它们的概念。下图阐明了这些Pass如何相互交互。
 
-（图）
+.. figure :: ch06/ch06_register_allocation.png
+   :align: center
 
 寄存器合并器
 ========================================
@@ -765,7 +772,8 @@ MC指令
 
 代码输出阶段处于所有后寄存器分配Pass之后。尽管名字似乎让人难于理解，代码生成从汇编打印（AsmPrinter）开始。下面的示意图给出了从MI指令到MCInst接着到汇编或者二进制指令的步骤：
 
-（图）
+.. figure :: ch06/ch06_code_emisson.png
+   :align: center
 
 让我们逐一介绍上图所示的步骤：
 

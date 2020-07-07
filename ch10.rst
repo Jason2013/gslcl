@@ -188,7 +188,8 @@ ClangFormat
 
 Attribution-ShareAlike 3.0许可证下获得许可，这意味着你可以任意地修改它，只要你保留此许可证，并把荣誉归于IOCCC。
 
-（图）
+.. figure :: ch10/ch10_clang_format_1.png
+   :align: center
 
 免得你想问，这是正确的代码吗？告诉你，是的。访问http://www.ioccc.org/2013/birken可下载它。现在，让我们演示ClangFormat会怎么处理此代码。
 
@@ -198,6 +199,8 @@ Attribution-ShareAlike 3.0许可证下获得许可，这意味着你可以任意
 
 下面的截屏显示了结果：
 
+.. figure :: ch10/ch10_clang_format_2.png
+   :align: center
 
 变好了，对吗？在实际中，你将幸运地不需要检查模糊不清的代码，但是调整格式以遵循特别的编码惯例不是人类特别梦想的工作。这就是ClangFormat的目的。它不只是一个工具，还是一个库，LibFormat，它格式化代码以适应某种编码惯例。这样，如果你新建的工具恰好会生成C或C++代码，你可以专注于你的项目，而把格式的事情留给ClangFormat。
 

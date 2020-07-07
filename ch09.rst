@@ -51,7 +51,8 @@ Clang静态分析器用到的算法具有指数级时间复杂度，这意味着
 
 下面的示意图显示了对我们给出的简单C程序的数据流分析：
 
-
+.. figure :: ch09/ch09_dataflow_analysis.png
+   :align: center
 
 我们看到，信息轻松地传播着，穿过代码行。当它到达使用i的printf语句时，框架检查关于这个变量我们知道什么，答案是未初始化，这为输出警告提供了充分的证据。
 
@@ -72,6 +73,9 @@ Clang静态分析器用到的算法具有指数级时间复杂度，这意味着
     }
 
 现在让我们看一下我们的数据流框架如何为这个程序计算变量的状态：
+
+.. figure :: ch09/ch09_dataflow_framework.png
+   :align: center
  
 我们看到，在节点4处，变量第一次被初始化（粗体显示）。然而，有两条不同的路径到达节点5：节点3处的if语句的true和false分支。在一条分支，变量schroedinger_integer未被初始化，而在另一条分支，它被初始化了。汇聚算子决定如何求和前驱的结果。我们的联合算子会尝试两份数据位，将schroedinger_integer声明为T（任何一个）。
 
@@ -89,12 +93,16 @@ Clang静态分析器用到的算法具有指数级时间复杂度，这意味着
 相反地，符号化执行引擎能够练习所有路径，而不实际运行你的代码。这是非常强大的特性，但是需要大的运行时来处理程序。
 
 正如经典的数据流框架，引擎按照它将执行每个语句的顺序遍历程序，找到每个变量并赋给它们初始状态。当到达一个控制流改变的构造时，不同之处出现了：引擎将路径一分为二，继续对每个路径单独地分析。这个图称为可到达程序状态图，下面的示意图显示了一个简单的例子，揭示引擎会怎样推理Joe的代码：
- 
+
+.. figure :: ch09/ch09_reachable_state.png
+   :align: center
+
 在此例中，第6行，第一个if语句将可到达状态图分叉为两条不同的路径：在一条路径中，unknown_value是非零，而在另一条中，unknown_value肯定是零。从此处开始，引擎会处理这个关于unknown_value的重要的约束，用它决定下一步选择哪一个分支。
 
 让我们比较可到达程序状态图和相同代码的显示控制流的图，即控制流图，附带着数据流方程提供给我们的经典的推理。看下面的示意图：
 
-
+.. figure :: ch09/ch09_cfg.png
+   :align: center
 
 你注意到的第一件事，是CFG可能分叉以表达控制流改变，但是它也合并节点以避免在可到达程序状态图中看到的组合爆炸。当它合并时，数据流分析可以用联合或者相交决定来合并来自不同路径的信息（第5行的节点）。如果它用联合，我们就得知schroedinger_integer既未初始化，又等于5，如我们的上个例子。如果它用相交，我们就无法得到关于schroedinger_integer的信息（未知状态）。
 
@@ -102,7 +110,6 @@ Clang静态分析器用到的算法具有指数级时间复杂度，这意味着
 
 测试静态分析器
 ***************************************
-
 
 在这一节，我们将探索如何在实践中运用Clang静态分析器。
 
@@ -201,7 +208,6 @@ Driver          clang --analyze -Xanalyzer -analyzerchecker=<package> <file>
 
 可选地，如果前面的命令行要求你指定头文件位置，就使用驱动器，如下：
 
-
 .. code-block :: bash
 
     $ clang --analyze –Xanalyzer –analyzer-checker=core joe.c
@@ -222,7 +228,10 @@ Driver          clang --analyze -Xanalyzer -analyzerchecker=<package> <file>
 =====================================
 
 如果你使用Apple Xcode IDE，你可以从其中使用静态分析器。首先你需要打开一个项目，在Product菜单中选择菜单项Analyze。你将看到，Clang静态分析器给出了漏洞发生的确切路径，让IDE能够为程序员将它高亮出来，如下面的截屏所示：
- 
+
+.. figure :: ch09/ch09_analyzer_in_xcode.png
+   :align: center
+
 分析器能够以plist格式导出信息，然后Xcode解释此信息，并以用户友好的方式将它显示出来。
 
 在HTML中生成图形化报告
@@ -242,8 +251,8 @@ Driver          clang --analyze -Xanalyzer -analyzerchecker=<package> <file>
 
 根据这个命令行，分析器将处理joe.c，并生成一个与Xcode中所看到的类似的报告，HTML文件，放置在report文件夹中。命令完成之后，查看此文件夹并打开HTML文件，以阅读漏洞报告。你应该看到一个类似于如下截图的报告：
 
-
-
+.. figure :: ch09/ch09_html_report.png
+   :align: center
 
 处理大型项目
 =======================================
@@ -269,7 +278,10 @@ scan-build替换CC或CXX环境变量，它们定义了C/C++编译器命令，如
     $ scan-view <output directory given by scan-build>
 
 scan-build所打印的最后一行，给出了运行scan-view所需要的参数。它会引用一个临时文件夹，那里存放着所有生成的报告。你应该看到一个格式优美的网页，列出了每个源文件的错误报告，如下面的截屏所示：
- 
+
+.. figure :: ch09/ch09_error_report.png
+   :align: center
+
 真实世界的例子——找到Apache的漏洞
 -------------------------------------------
 
@@ -297,10 +309,15 @@ scan-build所打印的最后一行，给出了运行scan-view所需要的参数�
     $ scan-build make
 
 由于Apache代码非常多，完成分析花了几分钟，找到了82个漏洞。下面是scan-view报告的一个例子：
- 
 
-在臭名昭著的心脏击穿漏洞击中了所有OpenSSL实现之后——这个问题引起了极大的关注——有趣的是，我们看到静态分析器仍然能够在Apache SSL的实现文件modules/ssl/ssl_util.c和modules/ssl/ssl_engine_config.c中找到六个疑似漏洞。请注意这些点可能存在于实践中从未被执行的路径内，可能不是真正的漏洞，因为静态分析器工作在一个有限的强度范围，为了在可接受的时间帧内完成分析。因此，我们没有断言它们是真正的漏洞。我们只是在此给出了一个例子来说明一个赋值是废物或者未定义的情况。
- 
+.. figure :: ch09/ch09_scanview_report.png
+   :align: center
+
+在臭名昭著的心脏击穿漏洞击中了所有OpenSSL实现之后——这个问题引起了极大的关注——有趣的是，我们看到静态分析器仍然能够在Apache SSL的实现文件modules/ssl/ssl_util.c和modules/ssl/ssl_engine_config.c中找到六个疑似漏洞。请注意这些点可能存在于实践中从未被执行的路径内，可能不是真正的漏洞，因为静态分析器工作在一个有限的强度范围，为了在可接受的时间帧内完成分析。因此，我们没有断言它们是真正的漏洞。我们只是在此给出了一个例子来说明一个赋值是废物或者未定义的情况:
+
+.. figure :: ch09/ch09_assign_value.png
+   :align: center
+
 在这个例子中，静态分析器向我们表明，有一个执行路径最后给dc->nVerifyClient赋了一个未定义的值。这个路径的部分经历了对ssl_cmd_verify_parse()函数的调用，这显示出分析器在一个相同的编译模块内检查复杂的函数间路径的能力。在这个辅助函数中，静态分析器显示了在一个路径中mode没有被赋以任何值，因而它是未初始化的。
 
 .. note ::
@@ -637,7 +654,10 @@ TableGen文件有一个检查器的表。它位于lib/StaticAnalyzer/Checkers/Ch
     $ clang –analyze -Xanalyzer -analyzer-check=alpha.powerplant mamagereactor.c
 
 检查器会显示它能发现为错误的路径并退出。如果你请求一个HTML报告，你就会看到一个漏洞报告，类似下面的截屏所示：
- 
+
+.. figure :: ch09/ch09_checker_report.png
+   :align: center
+
 现在你的任务完成了：你成功地开发了一个程序来自动检查对一个特定的路径敏感的API的违规。如果你愿意，你可以查看其它检查器的实现，学习更多处理更复杂场景的知识，或者查看下一节列出的资源以获得更多信息。
 
 更多资源

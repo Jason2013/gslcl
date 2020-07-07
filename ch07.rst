@@ -130,7 +130,8 @@ emitWord()方法是对JITCodeEmitter的包装，getBinaryCodeForInstr()是TableG
 
 因此，MipsCodeEmitter必须实现MipsCodeEmitter::getMemEncoding()方法以符合这个TableGen描述。下面的示意图显示了几个代码输出器和JIT框架的关系：
 
-（图）
+.. figure :: ch07/ch07_target_code_emitter.png
+   :align: center
 
 目标信息
 ==========================================
@@ -237,7 +238,8 @@ ExecutionEngine::create()方法调用JIT::createJIT()，以一个默认的JITMem
 
 为了编译函数，还需要调用getPointerToFunction()，它得到一个指向原生JIT编译的函数的指针。如果这个函数未曾JIT编译过，就作JIT编译并返回函数指针。下图阐明了此编译过程：
 
-（图）
+.. figure :: ch07/ch07_get_pointer_to_function.png
+   :align: center
 
 7. 通过getFunction()方法获取表示sum函数的函数IR对象：
 
@@ -400,7 +402,8 @@ ObjectImage对象（<llvm_source>/include/llvm/ExecutionEngine/ObjectImage.h）�
 
 下图说明了这些类是怎么相互关联的——实箭头表示协助，虚箭头表示继承。
 
-（图）
+.. figure :: ch07/ch07_object_buffer.png
+   :align: center
 
 动态链接
 ---------------------------------
@@ -411,7 +414,8 @@ MCJIT加载的模块对象被表示为ObjectImage实例。如前面提到的那�
 
 因此，RuntimeDyld::loadObject()方法首先创建目标特定的RuntimeDyldImpl对象，然后调用RuntimeDyldImpl::loadObject()。它根据ObjectBuffer生成ObjectImage对象。在这个过程中，还创建了ObjectFile对象，可以通过ObjectImage对象获取它。下图说明了这个过程：
 
-（图）
+.. figure :: ch07/ch07_dynamic_linking.png
+   :align: center
 
 运行时RuntimeDyld动态链接器用于让模块就绪过程中解决重定位，为模块对象注册异常处理帧。回想起执行引擎方法getFunctionAddress()和getPointerToFunction()要求引擎知道符号（函数）地址。为了解决这个问题，MCJIT还用RuntimeDyld获取任意的符号地址，通过RuntimeDyld::getSymbolLoadAddress()方法。
 
@@ -424,7 +428,8 @@ LinkingMemoryManager类，另一个RTDyldMemoryManager子类，是MCJIT引擎所
 
 SectionMemoryManager实例是一个简单的管理器。作为一个RTDyldMemoryManager的子类，SectionMemoryManager继承了它所有的库查询方法，但是通过直接处理低层MemoryBlock单元（<llvm_source>/include/llvm/Support/Memory.h）实现了代码和数据段的分配。
 
-（图）
+.. figure :: ch07/ch07_memory_manager.png
+   :align: center
 
 MC代码输出
 -----------------------------------
