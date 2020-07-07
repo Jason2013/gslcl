@@ -1,2021 +1,934 @@
 第6章 后端
-##########
+##########################
 
-　　后端（backend）由一套分析和转换Pass组成，它们的任务是代码生成，即将LLVM中间表示（IR）变换为目标代码（或者汇编）。LLVM支持的目标广泛：ARM，AArch64，Hexagon，MSP430，MIPS，Nvidia PTX，PowerPC，R600，SPARC，SystemZ，X86，和XCore。所有这些后端共享一套共用的接口，它是目标无关代码生成器的一部分，以通用API的方法抽象化后端任务。每个目标必须特殊化代码生成通用类，以实现目标特定的行为。在本章中，我们将介绍LLVM后端的多种一般性质，这对于感兴趣的读者来说，无论他想编写一个新的后端，维护一个已有的后端，或者编写一个后端Pass，都是很有用的。我们将介绍以下内容：
+后端（backend）由一套分析和转换Pass组成，它们的任务是代码生成，即将LLVM中间表示（IR）变换为目标代码（或者汇编）。LLVM支持广泛的目标：ARM，AArch64，Hexagon，MSP430，MIPS，Nvidia PTX，PowerPC，R600，SPARC，SystemZ，X86，和XCore。所有这些后端共享一套共用的接口，它是目标无关代码生成器的一部分，以通用API的方法抽象化后端任务。每个目标必须特殊化代码生成通用类，以实现目标特定的行为。在本章中，我们将介绍LLVM后端的多种一般性质，这对于感兴趣的读者来说，无论他想编写一个新的后端，维护一个已有的后端，或者编写一个后端Pass，都是很有用的。我们将介绍以下内容：
+
 * LLVM后端的组织结构概述
 * 如何解释各种描述后端的TableGen文件
 * 什么是LLVM指令选择以及如何运作
 * 指令调度和寄存器分配的任务是什么
 * 指令输出如何工作
 * 编写你自己的后端Pass
-概述
-　　将LLVM IR转换为目标汇编代码需要经历若干步骤。IR被变换为后端友好的指令、函数、全局变量的表示。这种表示随着程序经历各种后端阶段而变化，越来越接近实际的目标指令。下图给出了必需的步骤的概观，从LLVM IR到目标代码或者汇编，而如白色框所指示的，可以执行非必需的优化Pass以进一步改进翻译的质量。
 
-　　这个翻译流水线由后端的多个阶段组成，它们表示为浅灰色的中间框。它们在内部也称为super pass，因为它们由若干小的Pass实现。它们和白色框的区别在于，前者这些Pass对后端的成功很关键，而后者对于提高所生成的代码的效率更重要。下面我们简略描述上图所说明的代码生成的各个阶段：
-　　指令选择（Instruction Selection）阶段将内存中的IR表示变换为目标特定的SelectionDAG节点。起初，这个阶段将三地址结构的LLVM IR变换为DAG（Directed Acyclic Graph）形式，这是有向无环图。每个DAG能够表示单一基本块的计算，这意味着每个基本块关联不同的DAG。典型地节点表示指令，而边编码了它们之间的数据流依赖，但不限于此。转换为DAG是重要的，这让LLVM代码生成程序库能够运用基于树的模式匹配指令选择算法，它经过一些调整，也能工作在DAG上（而不仅仅是树）。到这个阶段结束时，DAG已将它所有的LLVM IR节点变换为目标机器节点，这些节点表示机器指令而不是LLVM指令。
-　　指令选择之后，对于使用哪些目标指令执行每个基本块的计算，我们已经有了清楚的概念。这编码在SelectionDAG类中。然而，我们需要返回三地址表示形式，以决定基本块内部的指令顺序，因为DAG并不暗示互不依赖的指令之间的顺序。第1次指令调度（Instruction Scheduling），也称为前寄存器分配（RA）调度，对指令排序，同时尝试发现尽可能多的指令层次的并行。然后这些指令被变换为MachineInstr三地址表示。
-　　回想一下，LLVM IR的寄存器集是无限的。这个性质一直保持着，直到寄存器分配（Register Allocation），它将无限的虚拟寄存器的引用转换为有限的目标特定的寄存器集，寄存器不够时挤出（spill）到内存。
-　　第2次指令调度，也称为后寄存器分配（RA）调度，在此时发生。因为此时在这个点可获得真实的寄存器信息，某些类型寄存器存在额外的风险和延迟，它们可被用以改进指令顺序。
-　　代码输出（Code Emission）阶段将指令从MachineInstr表示变换为MCInst实例。这种新的表示更适合汇编器和链接器，它有两种选择：输出汇编代码或者输出二进制块（blob）到一种特定的目标代码格式。
-　　如此，整个后端流水线用到了四种不同层次的指令表示：内存中的LLVM IR，SelectionDAG节点，MachineInstr，和MCInst。
+概述
+*************************
+
+将LLVM IR转换为目标汇编代码需要经历若干步骤。IR被变换为后端友好的指令、函数、全局变量的表示。这种表示随着程序经历各种后端阶段而变化，越来越接近实际的目标指令。下图给出了必需的步骤的概观，从LLVM IR到目标代码或者汇编，而如白色框所指示的，可以执行非必需的优化Pass以进一步改进翻译的质量。
+
+这个翻译流水线由后端的多个阶段组成，它们表示为浅灰色的中间框。它们在内部也称为super pass，因为它们由若干小的Pass实现。它们和白色框的区别在于，前者这些Pass对后端的成功很关键，而后者对于提高所生成的代码的效率更重要。下面我们简略描述上图所说明的代码生成的各个阶段：
+
+指令选择（Instruction Selection）过程将内存中的IR表示变换为目标特定的SelectionDAG节点。起初，这个过程将三地址结构的LLVM IR变换为DAG（Directed Acyclic Graph）形式，这是有向无环图。每个DAG能够表示单一基本块的计算，这意味着每个基本块关联不同的DAG。典型地节点表示指令，而边编码了它们之间的数据流依赖，但不限于此。转换为DAG是重要的，这让LLVM代码生成程序库能够运用基于树的模式匹配指令选择算法，它经过一些调整，也能工作在DAG上（而不仅仅是树）。到这个过程结束时，DAG已将它所有的LLVM IR节点变换为目标机器节点，这些节点表示机器指令而不是LLVM指令。
+
+指令选择之后，对于使用哪些目标指令执行每个基本块的计算，我们已经有了清楚的概念。这编码在SelectionDAG类中。然而，我们需要返回三地址表示形式，以决定基本块内部的指令顺序，因为DAG并不暗示互不依赖的指令之间的顺序。第1次指令调度（Instruction Scheduling），也称为前寄存器分配（RA）调度，对指令排序，同时尝试发现尽可能多的指令层次的并行。然后这些指令被变换为MachineInstr三地址表示。
+
+回想一下，LLVM IR的寄存器集是无限的。这个性质一直保持着，直到寄存器分配（Register Allocation），它将无限的虚拟寄存器的引用转换为有限的目标特定的寄存器集，寄存器不够时挤出（spill）到内存。
+
+第2次指令调度，也称为后寄存器分配（RA）调度，在此时发生。因为此时在这个点可获得真实的寄存器信息，某些类型寄存器存在额外的风险和延迟，它们可被用以改进指令顺序。
+
+代码输出（Code Emission）阶段将指令从MachineInstr表示变换为MCInst实例。这种新的表示更适合汇编器和链接器，它有两种选择：输出汇编代码或者输出二进制块（blob）到一种特定的目标代码格式。
+
+如此，整个后端流水线用到了四种不同层次的指令表示：内存中的LLVM IR，SelectionDAG节点，MachineInstr，和MCInst。
+
 使用后端工具
-　　llc是后端的主要工具。如果我们带着前面一章的sum.bc bitcode继续旅程，我们可以用下面的命令生成它的汇编代码：
-$ llc sum.bc -o sum.s
-　　或者生成目标代码，可以用下面的命令：
-$ llc sum.bc -filetype=obj -o sum.o
-　　使用以上命令时，llc会尝试选择一个后端匹配sum.bc bitcode中指定的目标三元组。使用-march选项可覆盖它而选择特定的后端。例如，用下面的命令生成MIPS目标代码：
-$ llc -march=mips -filetype=obj sum.bc -o sum.o
-　　如果你运行命令llc -version，llc会显示所支持的-march选项的完整列表。注意，这个列表和LLVM配置（详情见第1章（编译和安装LLVM））中用到的--enable-targets选项兼容。
-　　然而要注意的是，我们刚才强制让llc使用一个不同的后端为bitcode生成代码，这个bitcode起初是为x86编译的。在第5章（LLVM中间表示）中，我们解释了IR具有目标相关的一面，尽管它是为所有后端设计的共同语言。因为C/C++语言具有目标相关的属性，所以这种相关性会体现在LLVM IR中。
-　　因此，当bitcode的目标三元组和运行llc -march的目标不匹配时，必须谨慎。这种情况可能会导致ABI不匹配，坏的程序行为，有时还会导致代码生成器失败。然而在大多数情况下，代码生成器不会失败，它生成的代码含有微妙的bug，这是更糟糕的。
+========================
+
+llc是后端的主要工具。如果我们带着前面一章的sum.bc bitcode继续旅程，我们可以用下面的命令生成它的汇编代码：
+
+.. code-block:: bash
+
+    $ llc sum.bc -o sum.s
+
+或者生成目标代码，可以用下面的命令：
+
+.. code-block:: bash
+
+    $ llc sum.bc -filetype=obj -o sum.o
+
+使用以上命令时，llc会尝试选择一个后端匹配sum.bc bitcode中指定的目标三元组。使用-march选项可覆盖它而选择特定的后端。例如，用下面的命令生成MIPS目标代码：
+
+.. code-block:: bash
+
+    $ llc -march=mips -filetype=obj sum.bc -o sum.o
+
+如果你运行命令llc -version，llc会显示所支持的-march选项的完整列表。注意，这个列表和LLVM配置（详情见第1章（编译和安装LLVM））中用到的--enable-targets选项兼容。
+
+然而要注意的是，我们刚才强制让llc使用一个不同的后端为bitcode生成代码，这个bitcode起初是为x86编译的。在第5章（LLVM中间表示）中，我们解释了IR具有目标相关的一面，尽管它是为所有后端设计的共同语言。因为C/C++语言具有目标相关的属性，所以这种相关性会体现在LLVM IR中。
+
+因此，当bitcode的目标三元组和运行llc -march的目标不匹配时，必须谨慎。这种情况可能会导致ABI不匹配，坏的程序行为，有时还会导致代码生成器失败。然而在大多数情况下，代码生成器不会失败，它生成的代码含有微妙的bug，这是更糟糕的。
 
 为了理解IR的目标依赖性在实践中怎样表现，让我们看一个例子。考虑你的程序分配了char指针的一个vector，用以存储不同的字符串，你用通用的C语句malloc(sizeof(char*)*n)来为字符串vector分配内存。如果你在前端时指定了目标，比如32位MIPS架构，它生成的代码会让malloc分配n x 4字节的内存，因为在32位MIPS上每个指针是4字节。然而，如果你用llc编译这个bitcode而强制指定x86_64架构，它将生成坏的程序。在运行时，会发生潜在的分段错误（segmentation fault），因为x86_64架构的每个指针是8字节，这使得malloc分配的内存不足够。在x86_64上正确的malloc调用将分配n x 8字节。
+
 学习后端代码结构
-　　后端的实现分散在LLVM源代码树的不同目录中。代码生成背后的主要程序库位于lib目录和它的子文件夹CodeGen、MC、TableGen、和Target中：
+**************************
+
+后端的实现分散在LLVM源代码树的不同目录中。代码生成背后的主要程序库位于lib目录和它的子文件夹CodeGen、MC、TableGen、和Target中：
+
 * CodeGen目录包含的文件和头文件实现了所有通用的代码生成算法：指令选择，指令调度，寄存器分配，和所有它们需要的分析。
 * MC目录实现了低层次功能，包括汇编器（汇编解析器）、松弛算法（反汇编器）、和特定的目标文件格式如ELF、COFF、Macho等等。
 * TableGen目录包含TableGen工具的完整实现，它可以根据.td文件中的高层次的目标描述生成C++代码。
 * 每个目标的实现在Target的子文件夹中，如Target/Mips，包括若干.cpp、.h、和.td文件。为不同目标实现类似功能的文件倾向于共用类似的名字。
-　　如果你编写一个新的后端，你的代码将仅仅出现在Target文件夹中的一个子文件夹。作为一个例子，我们用Sparc来阐明Target/Sparc子文件夹中的组织：
-文件
-描述
-SparcInstrInfo.td
-SparcInstrFormats.td
-指令和格式的定义
-SparcRegisterInfo.td
-寄存器和寄存器类的定义
-SparcISelDAGToDAG.cpp
-指令选择
-SparcISelLowering.cpp
-SelectionDAG节点低层化
-SparcTargetMachine.cpp
-关于目标特定的属性的信息，例如数据布局（data layout）和ABI
-Sparc.td
-关于机器特征、CPU变种、和扩展特征的定义
-SparcAsmPrinter.cpp
-汇编代码输出
-SparcCallingConv.td
-ABI所定义的调用惯例
 
-　　通常后端都遵从这样的代码组织结构，因此开发者很容易地将一个后端的具体问题映射到另一个后端中。例如，你正在编写Sparc后端的寄存器信息文件SparcRegisterInfo.td，并且想知道x86后端是如何实现它的，你只要查看Target/X86文件夹中的X86RegisterInfo.td文件。
+如果你编写一个新的后端，你的代码将仅仅出现在Target文件夹中的一个子文件夹。作为一个例子，我们用Sparc来阐明Target/Sparc子文件夹中的组织：
+
++------------------------+-------------------------------------------------------------------------------------+
+| Filenames              | Description                                                                         |
++========================+=====================================================================================+
+| SparcInstrInfo.td      | Instruction and format definitions                                                  |
+| SparcInstrFormats.td	 |                                                                                     |
++------------------------+-------------------------------------------------------------------------------------+
+| SparcRegisterInfo.td	 | Registers and register classes definitions                                          |
++------------------------+-------------------------------------------------------------------------------------+
+| SparcISelDAGToDAG.cpp	 | Instruction selection                                                               |
++------------------------+-------------------------------------------------------------------------------------+
+| SparcISelLowering.cpp	 | SelectionDAG node lowering                                                          |
++------------------------+-------------------------------------------------------------------------------------+
+| SparcTargetMachine.cpp | Information about target-specific, properties such as the data layout and the ABI   |
++------------------------+-------------------------------------------------------------------------------------+
+| Sparc.td               | Definition of machine features, CPU variations, and extension features              |
++------------------------+-------------------------------------------------------------------------------------+
+| SparcAsmPrinter.cpp	 | Assembly code emission                                                              |
++------------------------+-------------------------------------------------------------------------------------+
+| SparcCallingConv.td	 | ABI-defined calling conventions                                                     |
++------------------------+-------------------------------------------------------------------------------------+
+
+通常后端都遵从这样的代码组织结构，因此开发者很容易地将一个后端的具体问题映射到另一个后端中。例如，你正在编写Sparc后端的寄存器信息文件SparcRegisterInfo.td，并且想知道x86后端是如何实现它的，你只要查看Target/X86文件夹中的X86RegisterInfo.td文件。
+
 了解后端程序库
-　　llc的非共享代码是相当小的（见tools/llc/llc.cpp），其大部分功能被实现为可重用的库，如同其它LLVM工具。对于llc的情况，它的功能由代码生成的库提供。这组程序库可分成目标相关的部分和目标无关的部分。代码生成的目标相关的库和目标无关的库在不同的文件中，这让你能够链接所期望的有限的目标后端。例如，在配置LLVM的时候设置--enable-targets=x86, arm，这样llc就只会链接x86和ARM的后端程序库。
-　　回想所有的LLVM程序库都以libLLVM为前缀。为清楚起见，我们在此省略这个前缀。下面列出了目标无关的代码生成器程序库：
-* AsmParser.a：这个库包含解析汇编文本的代码，实现了一个汇编器
-* AsmPrinter.a：这个库包含打印汇编语言的代码，实现了一个生成汇编文件的后端
-* CodeGen.a：这个库包含代码生成算法
-* MC.a：这个库包含MCInst类及其相关的类，用于以LLVM允许的最低层级表示程序
-* MCDisassembler.a：这个库实现了一个反汇编器，它读取目标代码文件，将字节解码为MCInst对象
-* MCJIT.a：这个库实现了just-in-time（即时）代码生成器
-* MCParser.a：这个库包含导出MCAsmParser类的接口，用于实现解析汇编文本的组件，执行汇编器的部分工作
-* SelectionDAG.a：这个库包含SelectionDAG及其相关的类
-* Target.a：这个库包含的接口能够让目标无关的算法请求目标相关的功能，尽管此功能实质上是由其它库（目标相关部分）实现的
-　　另一方面，下面是目标特定的程序库：
-* <Target>AsmParser.a：这个库包含AsmParser库的目标特定的部分，负责为目标机器实现汇编器
-* <Target>AsmPrinter.a：这个库包含打印目标指令的功能，让后端能够生成汇编语言文件
-* <Target>CodeGen.a：这个库包含后端目标相关功能的主体，包括具体的寄存器处理规则、指令选择、和调度
-* <Target>Desc.a：这个库包含关于低层级MC设施的目标机器信息，负责注册目标特定的MC对象，例如MCCodeEmitter
-* <Target>Disassembler.a：这个库补足了MCDisassembler库的目标相关的功能，以建造一个能够读取字节并将它们解码成MCInst目标指令的系统
-* <Target>Info.a：这个库负责在LLVM代码生成器系统中注册目标，提供了让目标无关的代码生成器程序库能够访问目标特定功能的门面类。
-　　在这些库的名字中，<Target>必须被替换为目标名字，例如，X86AsmParser.a是X86后端的解析程序库的名字。完整的LLVM安装将包含这些库，在<LLVM_INSTALL_PATH>/lib目录中。
+***************************
+
+llc的非共享代码是相当小的（见tools/llc/llc.cpp），其大部分功能被实现为可重用的库，如同其它LLVM工具。对于llc的情况，它的功能由代码生成的库提供。这组程序库可分成目标相关的部分和目标无关的部分。代码生成的目标相关的库和目标无关的库在不同的文件中，这让你能够链接所期望的有限的目标后端。例如，在配置LLVM的时候设置--enable-targets=x86, arm，这样llc就只会链接x86和ARM的后端程序库。
+
+回想所有的LLVM程序库都以libLLVM为前缀。为清楚起见，我们在此省略这个前缀。下面列出了目标无关的代码生成器程序库：
+
+•	AsmParser.a：这个库包含解析汇编文本的代码，实现了一个汇编器
+•	AsmPrinter.a：这个库包含打印汇编语言的代码，实现了一个生成汇编文件的后端
+•	CodeGen.a：这个库包含代码生成算法
+•	MC.a：这个库包含MCInst类及其相关的类，用于以LLVM允许的最低层级表示程序
+•	MCDisassembler.a：这个库实现了一个反汇编器，它读取目标代码文件，将字节解码为MCInst对象
+•	MCJIT.a：这个库实现了just-in-time（即时）代码生成器
+•	MCParser.a：这个库包含导出MCAsmParser类的接口，用于实现解析汇编文本的组件，执行汇编器的部分工作
+•	SelectionDAG.a：这个库包含SelectionDAG及其相关的类
+•	Target.a：这个库包含的接口能够让目标无关的算法请求目标相关的功能，尽管此功能实质上是由其它库（目标相关部分）实现的
+
+另一方面，下面是目标特定的程序库：
+
+•	<Target>AsmParser.a：这个库包含AsmParser库的目标特定的部分，负责为目标机器实现汇编器
+•	<Target>AsmPrinter.a：这个库包含打印目标指令的功能，让后端能够生成汇编语言文件
+•	<Target>CodeGen.a：这个库包含后端目标相关功能的主体，包括具体的寄存器处理规则、指令选择、和调度
+•	<Target>Desc.a：这个库包含关于低层级MC设施的目标机器信息，负责注册目标特定的MC对象，例如MCCodeEmitter
+•	<Target>Disassembler.a：这个库补足了MCDisassembler库的目标相关的功能，以建造一个能够读取字节并将它们解码成MCInst目标指令的系统
+•	<Target>Info.a：这个库负责在LLVM代码生成器系统中注册目标，提供了让目标无关的代码生成器程序库能够访问目标特定功能的门面类。
+
+在这些库的名字中，<Target>必须被替换为目标名字，例如，X86AsmParser.a是X86后端的解析程序库的名字。完整的LLVM安装将包含这些库，在<LLVM_INSTALL_PATH>/lib目录中。
+
 学习LLVM后端如何利用TableGen
-　　LLVM使用记录导向语言TableGen来描述若干编译器阶段用到的信息。例如，在第4章（前端）中，我们简单讨论了如何用TableGen文件（以.td为扩展名）描述前端的不同诊断信息。最初，LLVM团队开发TableGen是为了帮助程序员编写LLVM后端的。尽管代码生成器程序库的设计强调清楚地分离不同的目标特性，例如，用不同的class表示寄存器信息和指令，但是最终后端程序员写出的代码不得不在若干不同的文件中表示相同的某种机器特征。这种方法的问题在于，不仅付出额外的努力编写后端代码，而且在代码中引入了信息冗余，必须手工同步。
-　　例如，你想修改后端如何处理一个寄存器，将需要修改代码中几处不同的部分：在寄存器分配器中说明支持哪些寄存器类型；在汇编打印器中体现如何打印这个寄存器；在汇编解析器中体现它在汇编语言代码中如何解析；以及在反汇编器中，它需要知道寄存器的编码方式。这样，维护一个后端的代码变得很复杂。
-　　为了减轻这种复杂性，人们创造了TableGen，它对描述文件来说是一种声明式编程语言，这些文件成为关于目标的中央信息库。概念是在一个单一位置声明机器的某种特性，例如在<Target>InstrInfo.td中描述机器指令，然后让TableGen使用这个信息库，为一个具体的目的，例如生成模式匹配指令选择算法，你自己编写它是很冗长乏味的。
-　　如今，TableGen被用于描述所有种类的目标特定的信息，如指令格式、指令、寄存器、模式匹配DAG、指令选择匹配顺序、调用惯例、和目标CPU属性（支持的指令集架构（ISA）特征和处理器族）。
-　　Note
-　　...
+***********************************
+
+LLVM使用记录导向语言TableGen来描述若干编译器阶段用到的信息。例如，在第4章前端中，我们简单讨论了如何用TableGen文件（以.td为扩展名）描述前端的不同诊断信息。最初，LLVM团队开发TableGen是为了帮助程序员编写LLVM后端的。尽管代码生成器程序库的设计强调清楚地分离不同的目标特性，例如，用不同的class表示寄存器信息和指令，但是最终后端程序员写出的代码不得不在若干不同的文件中表示相同的某种机器特征。这种方法的问题在于，不仅付出额外的努力编写后端代码，而且在代码中引入了信息冗余，必须手工同步。
+
+例如，你想修改后端如何处理一个寄存器，将需要修改代码中几处不同的部分：在寄存器分配器中说明支持哪些寄存器类型；在汇编打印器中体现如何打印这个寄存器；在汇编解析器中体现它在汇编语言代码中如何解析；以及在反汇编器中，它需要知道寄存器的编码方式。这样，维护一个后端的代码变得很复杂。
+
+为了减轻这种复杂性，人们创造了TableGen，它对描述文件来说是一种声明式编程语言，这些文件成为关于目标的中央信息库。其想法是这样的：在一个单一位置声明机器的某种特性，例如在<Target>InstrInfo.td中描述机器指令，然后TableGen后端用这个信息库去达成一个具体的目的，例如生成模式匹配指令选择算法，这个算法你自己编写的话是很冗长乏味的。
+
+如今，TableGen被用于描述所有种类的目标特定的信息，如指令格式、指令、寄存器、模式匹配DAG、指令选择匹配顺序、调用惯例、和目标CPU属性（支持的指令集架构（ISA）特征和处理器族）。
+
+.. note ::
+
+    在计算机架构研究领域，完全自动地为处理器生成后端、模拟器、和硬件综合描述文件已经成为一个长期追求的目标，并且仍然是一个开放的问题。典型的方法是用一个类似TableGen的声明描述语言表示所有的机器信息，然后利用工具派生出所需要的各种软件（和硬件），并评估、测试处理器架构。如同期望的那样，这是非常困难的，和手工编写的工具相比，自动生成的工具的质量不尽如人意。LLVM TableGen的方法是辅助程序员完成较小的代码编写任务，仍然给予程序员完整的控制权，让他们用C++代码来实现任意定制的逻辑。
+
 语言
-　　TableGen语言由定义和class组成，它们用于建立记录。定义def用于根据class和multiclass关键字实例化记录。这些记录由TableGen后端进一步处理，为以下部件生成域特定的信息：代码生成器、Clang诊断、Clang驱动器选项、和静态分析器检查器。因此，记录表示的实际意思由后端决定，而记录仅仅存放信息。
-　　让我们示范一个简单的例子来阐述TableGen如何工作。假设你想为一个假设的架构定义ADD和SUB指令，而ADD有以下两种形式：所有操作数都是寄存器，操作数一个是寄存器一个是立即数。
-　　SUB指令只有第1种形式。看下面insns.td文件的示例代码：
-class Insn<bits <4> MajOpc, bit MinOpc> {
-  bits<32> insnEncoding;
-  let insnEncoding{15-12} = MajOpc;
-  let insnEncoding{11} = MinOpc;
-}
-multiclass RegAndImmInsn<bits <4> opcode> {
-  def rr : Insn<opcode, 0>;
-  def ri : Insn<opcode, 1>;
-}
-def SUB : Insn<0x00, 0>;
-defm ADD : RegAndImmInsn<0x01>;
-　　Insn class表示一个常规指令，RegAndImmInsn multiclass表示上面所提到的形式的指令。def SUB定义了SUB记录，而defm ADD定义了两个记录：ADDrr和ADDri。利用llvm-tblgen工具，你可以处理一个.td文件并检查结果记录：
-$ llvm-tblgen -print-records insns.td
-------------- Classes -----------------
-class Insn<bits<4> Insn:MajOpc = { ?, ?, ?, ? }, bit Insn:MinOpc = ?> {
-  bits<32> insnEncoding = { ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, Insn:MajOpc{3}, Insn:MajOpc{2}, Insn:MajOpc{1}, Insn:MajOpc{0}, Insn:MinOpc, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? };
-  string NAME = ?;
-}
-------------- Defs -----------------
-def ADDri {	// Insn ri
-  bits<32> insnEncoding = { ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 1, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? };
-  string NAME = "ADD";
-}
-def ADDrr {	// Insn rr
-  bits<32> insnEncoding = { ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 1, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? };
-  string NAME = "ADD";
-}
-def SUB {	// Insn
-  bits<32> insnEncoding = { ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? };
-  string NAME = ?;
-}
-　　通过llvm-tblgen工具还可使用TableGen后端；输入llvm-tblgen --help，会列出所有后端选项。注意此例子没有用LLVM特定的域，它不能用于一个后端。关于TableGen语言的更多信息，请参考网页http://llvm.org/docs/TableGenFundamentals.html。
+********************
+
+TableGen语言由定义和类（class）组成，它们用于建立记录。定义def用于根据class和multiclass关键字实例化记录。这些记录由TableGen后端进一步处理，为以下部件生成域特定的信息：代码生成器、Clang诊断、Clang驱动器选项、和静态分析器检查器。因此，记录所表示的实际意思由后端给出，而记录仅仅存放信息。
+
+让我们示范一个简单的例子来阐述TableGen如何工作。假设你想为一个假设的架构定义ADD和SUB指令，而ADD有以下两种形式：所有操作数都是寄存器，操作数一个是寄存器一个是立即数。
+
+SUB指令只有第1种形式。看下面insns.td文件的示例代码：
+
+.. code-block :: cpp
+
+    class Insn<bits <4> MajOpc, bit MinOpc> {
+      bits<32> insnEncoding;
+      let insnEncoding{15-12} = MajOpc;
+      let insnEncoding{11} = MinOpc;
+    }
+    multiclass RegAndImmInsn<bits <4> opcode> {
+      def rr : Insn<opcode, 0>;
+      def ri : Insn<opcode, 1>;
+    }
+    def SUB : Insn<0x00, 0>;
+    defm ADD : RegAndImmInsn<0x01>;
+    Insn class表示一个常规指令，RegAndImmInsn multiclass表示上面所提到的形式的指令。def SUB定义了SUB记录，而defm ADD定义了两个记录：ADDrr和ADDri。利用llvm-tblgen工具，你可以处理一个.td文件并检查结果记录：
+    $ llvm-tblgen -print-records insns.td
+    ------------- Classes -----------------
+    class Insn<bits<4> Insn:MajOpc = { ?, ?, ?, ? }, bit Insn:MinOpc = ?> {
+      bits<5> insnEncoding = { Insn:MinOpc, Insn:MajOpc{0},
+      Insn:MajOpc{1}, Insn:MajOpc{2}, Insn:MajOpc{3} };
+      string NAME = ?;
+    }
+    ------------- Defs -----------------
+    def ADDri { // Insn ri
+      bits<5> insnEncoding = { 1, 1, 0, 0, 0 };
+      string NAME = "ADD";
+    }
+    def ADDrr { // Insn rr
+      bits<5> insnEncoding = { 0, 1, 0, 0, 0 };
+      string NAME = "ADD";
+    }
+    def SUB { // Insn
+      bits<5> insnEncoding = { 0, 0, 0, 0, 0 };
+      string NAME = ?;
+    }
+
+通过llvm-tblgen工具还可使用TableGen后端；输入llvm-tblgen --help，会列出所有后端选项。注意此例子没有用LLVM特定的域，它不能用于一个后端。关于TableGen语言的更多信息，请参考网页http://llvm.org/docs/TableGenFundamentals.html。
+
 了解代码生成器.td文件
-　　如前所述，代码生成器广泛地使用TableGen记录来表达目标特定的信息。在这个子小节，我们来浏览以代码生成为目的的TableGen文件。
+****************************
+
+如前所述，代码生成器广泛地使用TableGen记录来表达目标特定的信息。在这个子小节，我们来浏览一下致力于代码生成的TableGen文件。
+
 目标属性
-　　...
+================
+
+<Target>.td文件（例如，X86.td）定义了所支持的ISA特性和处理器家族。例如，X86.td定义了AVX2扩展：
+
+.. code-block :: cpp
+
+    def FeatureAVX2 : SubtargetFeature<”avx2”, “X86SSELevel”, “AVX2”,
+                                  “Enable AVX2 instructions”,
+                                   [FeatureAVX]>;
+
+关键字def通过class类型SubtargetFeature定义了记录FeatureAVX2。最后一个参数是已经包含在定义中的其它特性的一个列表。因此，一个具有AVX2的处理器包含所有AVX指令。
+
+此外，我们还可以定义一个处理器类型，包含它所能提供的ISA扩展和特性：
+
+.. code-block :: cpp
+
+    def : ProcessorModel<”corei7-avx”, SandyBridgeModel,
+                      [FeatureAVX, FeatureCMPXCHG16B, ...,
+                      FeaturePCLMUL]>;
+
+<Target>.td文件还包含了所有其它的.td文件，是描述目标特定域信息的主文件。llvm-tblgen工具必须总是从它那获得一个目标任意的TableGen记录。例如，为了输出x86所有可能的记录，执行下面的命令：
+
+.. code-block :: bash
+
+    $ cd <llvm_source>/lib/Target/X86
+    $ llvm-tblgen -print-records X86.td -I ../../../include
+
+X86.td文件含有TableGen用以生成X86GenSubtargetInfo.inc文件的部分信息，但是所用的信息不限于此，一般来说，没有从一个.td文件到一个.inc文件的直接映射。为了理解这个表述，考虑<Target>.td文件是一个重要的顶层文件，它利用TableGen的include指令包含了所有其它的.td文件。因此，当生成C++代码时，TableGen总是解析所有的后端.td文件，这意味着你可以自由地将记录放到任意你觉得最合适的地方。即使X86.td包含了所有其它的后端.td文件，除了include指令，这个文件的内容也是和Subtarget x86子类的定义保持一致的。
+
+如果你查看实现x86Subtarget类的X86Subtarget.cpp文件，你会发现一个C++预处理器指令，”#include “X86GenSubtargetInfo.inc”，这揭示了我们如何在常规的code base中嵌入TableGen生成的C++代码。这个特别的include文件包含了处理器特性常量，处理器特性向量——它关联了特性和它的字符串描述，以及其它相关的资源。
+
 寄存器
-　　...
+====================
+
+寄存器和寄存器类在<Target>RegisterInfo.td文件中定义。寄存器类用于在之后的指令定义中连结指令操作数和特定的寄存器集合。例如，X86RegisterInfo.td用下面的语句定义了16位的寄存器：
+
+.. code-block :: bash
+
+    let SubRegIndices = [sub_8bit, sub_8bit_hi], ... in {
+    def AX : X86Reg<"ax", 0, [AL,AH]>;
+    def DX : X86Reg<"dx", 2, [DL,DH]>;
+    def CX : X86Reg<"cx", 1, [CL,CH]>;
+    def BX : X86Reg<"bx", 3, [BL,BH]>;
+    ...
+
+此处let构建指令用于定义一个额外的字段SubRegIndices，在以{开始并以}结束的区域中的所有记录都会存放这个字段。16位的寄存器的定义是从X86Reg类派生而来的，它为每个寄存器保存它的名字、数目、和一个8位的子寄存器的列表。16位寄存器的寄存器类的定义被重新产生，如下所示：
+
+.. code-block :: bash
+
+    def GR16 : RegisterClass<"X86", [i16], 16,
+                          (add AX, CX, DX, ..., BX, BP, SP,
+                              R8W, R9W, ..., R15W, R12W, R13W)>;
+
+GR16寄存器类包含所有的16位寄存器和它们各自的寄存器分配首选的顺序。在TableGen处理之后，每个寄存器类的名字会得到后缀RegClass，例如，GR16变成了GR16RegClass。TableGen会生成寄存器和寄存器类的定义，收集它们的相关信息的方法，汇编器的二进制编码，和它们的DWARF（Linux调试记录格式）信息。你可以用llvm-tblgen查看TableGen生成的代码：
+
+.. code-block:: bash
+
+    $ cd <llvm_source>/lib/Target/X86
+    $ llvm-tblgen -gen-register-info X86.td -I ../../../include
+
+可选地，你可以查看LLVM编译过程中生成的C++文件<LLVM_BUILD_DIR>/lib/Target/X86/X86GenRegisterInfo.inc。这个文件被X86RegisterInfo.cpp包含，辅助它定义X86RegisterInfo类。其中包含了处理器寄存器的枚举，当你在调试你的后端并且不知道数字16表示什么寄存器（这是你的调试器所能给你的最好的猜测）的时候，这个文件是一份有用的参考指引。
+
 指令
-　　...
-理解指令选择阶段
-　　指令选择是将LLVM IR转换为代表目标指令的SelectionDAG节点（SDNode）的过程。第一步是根据LLVM IR指令建立DAG，创建SelectionDAG对象，其节点保存IR操作。接着，这些节点经过低层化、DAG结合、和合法化等阶段，使它更容易匹配目标指令。然后，指令选择用节点模式匹配方法执行DAG到DAG的变换，将SelectionDAG节点转换为代表目标指令的节点。
-　　Note
-　　...
-SelectionDAG class
-　　SelectionDAG class用一个DAG表示每个基本块的计算，每个SDNode对应一个指令或者操作数。下图由LLVM生成，展示了sum.bc的DAG，它只有一个函数和一个基本块：
-　　（图）
-　　DAG的边通过use-def关系强制它的操作之间的顺序。如果节点B（例如，add）有一条出去的边到节点A（例如，Constant<-10>），这意味着节点A定义了一个值（32位整数-10），而节点B使用它（作为加法的一个操作数）。因此，A操作必须在B之前执行。黑色箭头表示常规边指示数据流依赖，正如例子add。虚线蓝色箭头表示非数据流链，用以强制否则无关系的指令，例如，load和store指令必须固定它们原始的程序顺序，如果它们访问相同的地址位置。在前面的图中，我们知道CopyToReg操作必须在X86ISD::RET_FLAG之前发生，由于虚线蓝色箭头。红色边保证它相邻的节点必须粘合在一起，这意味着它们必须紧挨着执行，它们之间不可有其它指令。例如，我们指定相同的节点CopyToReg和X86ISD::RET_FLAG必须安排为紧挨着，由于红色的边。
-　　...
+========================
+
+指令格式和指令分别在<Target>InstrFormats.td和<Target>InstInfo.td文件中被定义。指令格式包含所必需的指令编码字段，用于写二进制形式的指令，而指令记录表示指令，一条记录表示一条指令。你可以创建中间指令类，就是用于派生指令记录的TableGen类，以析出公共特性因子，例如相似的数据处理指令的共同编码方式。然而，每个指令或者格式必须是Instruction TableGen类的直接或间接的子类，Instruction类在include/llvm/Target/Target.td中被定义。它的字段告诉显示了TableGen后端期望在指令记录中找到什么内容：
+
+.. code-block :: cpp
+
+    class Instruction {
+      dag OutOperandList;
+      dag InOperandList;
+      string AsmString = "";
+      list<dag> Pattern;
+      list<Register> Uses = [];
+      list<Register> Defs = [];
+      list<Predicate> Predicates = [];
+      bit isReturn = 0;
+      bit isBranch = 0;
+    ...
+
+dag是一种特别的TableGen类型，用于存放SelectionDAG节点。这些节点表示指令选择过程的操作符、寄存器、或常量。代码中出现的字段扮演如下角色：
+
+•	OutOperandList字段存储结果节点，让后端能够找到代表指令输出的DAG节点。例如，在MIPS ADD指令中，这个字段被定义为(outs GP32Opnd:$rd)。在此例中：
+    
+    * outs是一个特别的DAG节点，用于指示它的孩子是输出操作数
+    * GPR32Opnd是一个MIPS专有的DAG节点，用于指示MIPS 32位的通用寄存器的一个实例
+    * $rd是一个任意的寄存器名字，用于识别节点
+
+•	InOperandList字段存放输入节点，例如，在MIPS ADD指令中，它是(ins GRP32Opnd:$rs, GRP32Opnd:$rt)。
+•	AsmString字段表示指令的汇编字符串，例如，在MIPS ADD指令中，它是”add $rd, $rs, $rt”。
+•	Pattern是dag对象的列表，它将在指令选择时被用于执行模式匹配。如果一个模式被匹配了，指令选择过程会用这条指令替换匹配的节点。例如，在MIPS ADD指令的[(set GPR32Opnd:$rd, (add GPR32Opnd:$rs, GPR32Opns:$rt))]模式中，[ and ]表示只有一个dag元素的列表的内容，它是在类似LISP表示法的小括号之间被定义的。
+•	Uses和Defs记录在指令执行期间被隐式使用和定义的寄存器的列表。例如，RISC处理器的return指令隐式地返回地址寄存器，而call指令隐式地定义返回地址寄存器。
+•	Predicates字段存储在指令选择尝试匹配指令之前要检查的先决条件的列表。如果检查失败了，就没有匹配。例如，一个predicate可能说明这个指令只对特定的子目标有效。如果你所运行代码生成器的目标三元组选择了另一个子目标，这个predicate会评估为假，这个指令永远不会匹配。
+•	此外，其它的字段包括isReturn和isBranch，它们向代码生成器说明关于指令行为的信息。例如，如果isBranch = 1，代码生成器就知道这个指令是分支指令，必须处在一个基本块的末尾。
+
+在下面的代码块中，我们看到在SparcInstrInfo.td中的XNORrr指令的定义。它用到了F3_1格式（在SparcInstrFormats.td中被定义），它包括了来自SPARC V8架构手册的F3格式的一部分：
+
+.. code-block :: bash
+
+    def XNORrr : F3_1<2, 0b000111,
+      (outs IntRegs:$dst), (ins IntRegs:$b, IntRegs:$c),
+         "xnor $b, $c, $dst",
+      [(set i32:$dst, (not (xor i32:$b, i32:$c)))]>;
+
+这个XNORrr指令有两个IntRegs（一个表示SPARC 32位整数寄存器类的目标特定的DAG节点）源操作数和一个IntRegs结果，也就是OutOperandList = (outs IntRegs:$dst)和InOperandList = (ins IntRegs:$b, IntRegs:$c)。
+
+AsmString汇编通过$记号引用指定的操作数："xnor $b, $c, $dst"。Pattern列表元素包含那个SelectionDAG节点，它应该被匹配到这个指令。举例来说，每当xor的结果由一个not反转位，并且xor的两个操作数都是寄存器的时候，XNORrr指令被匹配。
+
+为了查看XNORrr指令记录的字段，你可以执行下面的命令序列：
+
+.. code-block:: bash
+
+    $ cd <llvm_sources>/lib/Target/Sparc
+    $ llvm-tblgen -print-records Sparc.td -I ../../../include | grep XNORrr -A 10
+
+多个TableGen后端利用指令记录的信息以履行它们的职能，从相同的指令记录生成不同的.inc文件。这跟TablenGen的目标是一致的，即创建一个中央仓库，利用它给后端的各个部分生成代码。下面的每个文件是由不同的TableGen后端生成的：
+
+•	``<Target>GenDAGISel.inc``：这个文件利用指令记录中patterns字段的信息以输出选择SelectionDAG数据结构的指令的代码。<Target>ISelDAGtoDAG.cpp文件包含这个文件。
+•	``<Target>GenInstrInfo.inc``：这个文件包含列出目标的所有指令的枚举，除了其它的描述指令的表。<Target>InstrInfo.cpp、<Target>InstrInfo.h、<Target>MCTargetDesc.cpp、和<Target>MCTargetDesc.h包含这个文件。然而，每个文件会在包含TableGen生成的文件之前定义一组特定的宏，改变了这个文件如何在每个上下文中被解析和使用。
+•	``<Target>GenAsmWriter.inc``：这个文件包含映射字符串的代码，该字符串被用来打印每个指令的汇编。<Target>AsmPrinter.cpp文件包含这个文件。
+•	``<Target>GenCodeEmitter.inc``：这个文件包含这样的函数，它们为每条指令映射并输出二进制代码，从而生成机器代码以填写目标文件。<Target>CodeEmitter.cpp包含这个文件。
+•	``<Target>GenDisassemblerTables.inc``：这个文件实现这样的表和算法，它们能够解码一个字节序列并识别出它表示的目标指令。它用于实现反汇编工具，<Target>Disassembler.cpp文件包含它。
+•	``<Target>GenAsmMatcher.inc``：这个文件实现目标指令的汇编器的解析器。<Target>AsmParser.cpp文件包含它两次，每次都有一组不同的预处理宏，从而改变如何解析这个文件。
+
+理解指令选择过程
+***************************
+
+指令选择是将LLVM IR转换为代表目标指令的SelectionDAG节点（SDNode）的过程。第一步是根据LLVM IR指令建立DAG，创建SelectionDAG对象，其节点保存IR操作。接着，这些节点经过低层化、DAG结合、和合法化等过程，使它更容易匹配目标指令。然后，指令选择用节点模式匹配方法执行DAG到DAG的变换，将SelectionDAG节点转换为代表目标指令的节点。
+
+.. note ::
+
+    指令选择是其中一个最耗时的后端Pass。一项编译SPEC CPU2006基准测试的函数的研究揭示，在LLVM 3.0中，以-O2运行llc工具，平均来说，指令选择Pass几乎花去一半的时间。如果你有兴趣了解所有-O2级别的目标无关和目标有关的Pass的平均占用时间，你可以查看LLVM JIT编译成本分析的技术报告的附件：http://www.ic.unicamp.br/~reltech/2013/13-13.pdf。
+
+SelectionDAG类
+========================
+
+SelectionDAG类（class）用一个DAG表示每个基本块的计算，每个SDNode对应一个指令或者操作数。下图由LLVM生成，展示了sum.bc的DAG，它只有一个函数和一个基本块：
+
+（图）
+
+DAG的边通过use-def关系强制它的操作之间的顺序。如果节点B（例如，add）有一条出去的边到节点A（例如，Constant<-10>），这意味着节点A定义了一个值（32位整数-10），而节点B使用它（作为加法的一个操作数）。因此，A操作必须在B之前执行。黑色箭头表示常规连线，指示数据流依赖，正如例子add。虚线蓝色箭头表示非数据流链，用以强制两条指令的顺序，否则它们就是不相关的，例如，load和store指令必须固定它们原始的程序顺序，如果它们访问相同的内存位置。在前面的图中，我们知道CopyToReg操作必须在X86ISD::RET_FLAG之前发生，由于虚线蓝色箭头。红色连线保证它相邻的节点必须粘合在一起，这意味着它们必须紧挨着执行，它们之间不可有其它指令。例如，我们指定相同的节点CopyToReg和X86ISD::RET_FLAG必须安排为紧挨着，由于红色的连线。
+
+每个节点可以提供一个不同的值类型，依赖于它和它的使用者的关系。一个值不必是具体的，也可能是一个抽象的标记（token）。它可能有任意如下类型：
+
+•	节点所提供的值可以是一个具体的值类型，表示整数、浮点数、向量、或指针。数据处理节点根据它的操作数计算一个新的值，其结果是这种类别的一个例子。类型可以是i32、i64、f32、v2f32（有两个f32元素的向量）、和iPTR等。在LLVM示意图中，当另一个节点使用这个值的时候，生产者-消费者关系是由一条常规的黑色连线描绘的。
+•	Other类型是一个抽象的标记，用于表示链值（示意图中的ch）。在LLVM示意图中，当另一个节点使用一个Other类型的值的时候，连接两者的连线被打印为蓝色的虚线。
+•	Glue类型表示粘合。在LLVM示意图中，当另一个节点使用一个Glue类型的值的时候，连接两者的连线被画成红色。
+
+SelectionDAG对象有一个特别的标记基本块入口的EntryToken，它提供一个Other类型的值，让成链的节点能够以它为起点。SelectionDAG对象还会引用图的根节点，这个根节点正好是最后一条指令的后续节点，它们的关系也被编码为Other类型的值的一个链。
+
+在这个阶段，目标无关和目标特定的节点可以同时存在，这是执行预备步骤的结果，例如低层化和合法化，这些预备步骤负责为指令选择准备DAG。然而，等到指令选择结束的时候，所有被目标指令匹配的节点都会是目标特定的。在前面的示意图中，有如下目标无关的节点：CopyToReg，CopyFromReg，Register (%vreg0)，add，和Constant。此外，有如下已经被预处理并且是目标特定的节点（尽管它们在指令选择之后仍然可以改变）：TargetConstant，Register (%EAX)，和X86ISD::REG_Flag。
+
+在示意图所示的例子中，我们可能观察到下面的语义：
+
+•	``Register``：这个节点可能引用虚拟或者（目标特定的）物理的寄存器。
+•	``CopyFromReg``：这个节点复制一个在当前基本块作用域之外定义的寄存器——在我们的例子中，它复制了一个函数的参数。
+•	``CopyToReg``：这个节点将一个值复制到一个特定的寄存器，可是不提供任何具体的值让其它节点使用它。然而，这个节点产生一个链的值（Other类型），和不生成具体的值的其它节点构成链。举例来说，为了使用被写到EAX的值，X86ISD::RET_FLAG节点使用由Register (%EAX)提供的i32结果，并且还接收由CopyToReg产生的链，这样确保%EAX是通过CopyToReg更新了的，因为这个链会强制CopyToReg被安排在X86ISD::RET_FLAG之前。
+
+想要深入了解SelectionDAG类的细节，请参考llvm/include/llvm/CodeGen/SelectionDAG.h头文件。对于节点的结果类型，你应该参考llvm/include/llvm/CodeGen/ValueTypes.h头文件。头文件llvm/include/llvm/CodeGen/ISDOpcodes.h定义了目标无关的节点，而头文件lib/Target/<Target>/<Target>ISelLowering.h定义了目标特定的节点。
+
 低层化
-　　在前面的子小节中，我们展示的图中目标特定的和目标无关的节点是并存的。你可能会问自己，一些目标特定的节点怎么已经在SelectionDAG中了，如果这是指令选择的输入？为了理解这个问题，我们首先在下图中给出所有先于指令选择的步骤的全局图，在左上角从LLVM IR步骤开始：
-　　（图）
-　　首先，一个SelectionDAGBuilder实例（详情见SelectionDAGISel.cpp）访问每个函数，为每个基本块创建一个SelectionDAG对象。在此过程期间，一些特殊的IR指令例如call和ret已经要求目标特定的语句——例如，如何传递调用参数和如何从一个函数返回——被转换为SelectionDAG节点。为了解决这个问题，TargetLowering class中的算法第一次被使用。这个class是每个目标都必须实现的抽象接口，但是还有大量共用的功能被所有后端所使用。
-　　为了实现这个抽象接口，每个目标声明一个TargetLowering的子类，命名为<Target>TargetLowering。每个目标还重载方法，它们实现一个具体的目标无关的高层次的节点应该如何被低层化到一个层次，它接近这个机器的节点。如期望那样，仅有小部分节点必须以这种方式低层化，而大部分其它节点在指令选择时被匹配和替换。例如，在sum.bc的SelectionDAG中，用X86TargetLowering::LowerReturn()方法（）低层化ret IR指令。同时，生成了X86ISD::RET_FLAG节点，它将函数结果复制到EAX——一种处理函数返回的目标特定的方式。
+=========================
+
+
+在前面的子小节中，我们展示的图中目标特定的和目标无关的节点是并存的。你可能会问自己，一些目标特定的节点怎么已经在SelectionDAG中了，如果这是指令选择的输入？为了理解这个问题，我们首先在下图中给出所有先于指令选择的步骤的全局图，在左上角从LLVM IR步骤开始：
+
+（图）
+
+首先，一个SelectionDAGBuilder实例（详情见SelectionDAGISel.cpp）访问每个函数，为每个基本块创建一个SelectionDAG对象。在此过程期间，一些特殊的IR指令例如call和ret已经要求目标特定的语句——例如，如何传递调用参数和如何从一个函数返回——被转换为SelectionDAG节点。为了解决这个问题，TargetLowering class中的算法第一次被使用。这个class是每个目标都必须实现的抽象接口，但是还有大量共用的功能被所有后端所使用。
+
+为了实现这个抽象接口，每个目标声明一个TargetLowering的子类，命名为<Target>TargetLowering。每个目标还重载方法，它们实现一个具体的目标无关的高层次的节点应该如何被低层化到一个层次，它接近这个机器的节点。如期望那样，仅有小部分节点必须以这种方式低层化，而大部分其它节点在指令选择时被匹配和替换。例如，在sum.bc的SelectionDAG中，用X86TargetLowering::LowerReturn()方法（参见lib/Target/X86/X86ISelLowering.cpp）低层化ret IR指令。同时，生成了X86ISD::RET_FLAG节点，它将函数结果复制到EAX——一种处理函数返回的目标特定的方式。
+
 DAG结合与合法化
-　　从SelectionDAGBuilder输出的SelectionDAG并不能直接作指令选择，必须经历附加的转换——如前面图中所显示的。先于指令选择执行的Pass序列如下：
-　　DAG结合Pass优化欠优化的SelectionDAG结构，通过匹配一系列节点并用简化的结构替换它们，当可获利时。例如，子图(add (Register X), (constant 0))可以合并为(Register X)。类似地，目标特定的结合方法可以识别节点模式，并决定结合合并它们是否将提高此目标的指令选择的质量。你可以在lib/CodeGen/SelectionDAG/DAGCombiner.cpp文件中找到LLVM通用的DAG结合的实现，在lib/Target/<Target_Name>/<Target>ISelLowering.cpp文件中找到目标特定的结合的实现。方法setTargetDAGCombine()标记目标想要结合的节点。举例来说，MIPS后端尝试结合加法——见lib/Target/Mips/MipsISelLowering.cpp中的setTargetDAGCombine(ISD::ADD)和performADDCombine()。
-　　注意
-　　DAG结合在每次合法化之后运行，以最小化任何SelectionDAG冗余。而且，DAG结合知道在Pass链的何处运行，（例如在类型合法化或者向量合法化之后），能够运用这些信息以变得更精确。
-　　类型合法化Pass确保指令选择只需要处理合法的类型。合法的类型是指目标天然地支持的类型。例如，在只支持i32类型的目标上，i64操作数的加法是非法的。在这种情况下，类型合法化动作整数展开把i64操作数破分为两个i32操作数，同时生成合适的节点以操作它们。目标定义了每种类型所关联的寄存器，显式地声明了支持的类型。这样，非法的类型必须被删除并相应地处理：标量类型可以被提升，展开，或者软件化，而向量类型可以被分解，标量化，或者放宽——见llvm/include/llvm/Target/TargetLowering.h对每种情况的解释。此外，目标还可以设置定制的方法来合法化类型。类型合法化运行两次，在第一次DAG结合之后和在向量合法化之后。
-　　...
+==========================
+
+从SelectionDAGBuilder输出的SelectionDAG并不能直接作指令选择，必须经历附加的转换——如前面图中所显示的。先于指令选择执行的Pass序列如下：
+
+•	DAG结合Pass优化欠优化的SelectionDAG结构，通过匹配一系列节点并用简化的结构替换它们，当可获利时。例如，子图(add (Register X), (constant 0))可以合并为(Register X)。类似地，目标特定的结合方法可以识别节点模式，并决定结合合并它们是否将提高此目标的指令选择的质量。你可以在lib/CodeGen/SelectionDAG/DAGCombiner.cpp文件中找到LLVM通用的DAG结合的实现，在lib/Target/<Target_Name>/<Target>ISelLowering.cpp文件中找到目标特定的结合的实现。方法setTargetDAGCombine()标记目标想要结合的节点。举例来说，MIPS后端尝试结合加法——见lib/Target/Mips/MipsISelLowering.cpp中的setTargetDAGCombine(ISD::ADD)和performADDCombine()。
+
+.. note ::
+
+    DAG结合在每次合法化之后运行，以最小化任何SelectionDAG冗余。而且，DAG结合知道在Pass链的何处运行，（例如在类型合法化或者向量合法化之后），能够运用这些信息以变得更精确。
+
+•	类型合法化Pass确保指令选择只需要处理合法的类型。合法的类型是指目标天然地支持的类型。例如，在只支持i32类型的目标上，i64操作数的加法是非法的。在这种情况下，类型合法化动作整数展开把i64操作数破分为两个i32操作数，同时生成合适的节点以操作它们。目标定义了每种类型所关联的寄存器，显式地声明了支持的类型。这样，非法的类型必须被删除并相应地处理：标量类型可以被提升，展开，或者软件化，而向量类型可以被分解，标量化，或者放宽——见llvm/include/llvm/Target/TargetLowering.h对每种情况的解释。此外，目标还可以设置定制的方法来合法化类型。类型合法化运行两次，在第一次DAG结合之后和在向量合法化之后。
+•	有的时候，后端直接支持向量类型，这意味着有一个这样的寄存器类，但是没有处理给定向量类型的具体的操作。例如，x86的SSE2支持v4i32向量类型。然而，并没有x86指令支持v4i32类型的ISD::OR操作，而只有v2i64的。因此，向量合法化会处理这种情况，提升或者扩展操作，为指令使用合法的类型。目标还可以通过定制的方式处理合法化。对于前面提到的ISD::OR，操作会被提升而使用v2i64类型。看一看下面的lib/Target/X86/X86ISelLowering.cpp的代码片段：
+
+.. code-block :: cpp
+
+    setOperationAction(ISD::OR, v4i32, Promote);
+    AddPromotedToType (ISD::OR, v4i32, MVT::v2i64);
+
+.. note ::
+
+    对于某些类型，扩展会消除向量而使用标量。这可能引入目标不支持的标量类型。然而，后续的类型合法化会清理这种情况。
+
+•	DAG合法化扮演向量合法化一样的角色，但是它处理任意剩余的具有不支持的类型（标量或向量）的操作。它支持相同的动作：提升、扩展、和定制节点的处理。举例来说，x86不支持以下三种情形：i8类型的有符号整数到浮点数的转化操作（ISD::SINT_TO_FP），请求合法化提升它；i32操作数的有符号除法（ISD::SDIV），发起一个扩展请求，产生一个库调用以处理这个除法；f32操作数的浮点数绝对值，利用定制的句柄生成具有相同效果的等价的代码。x86以如下方式发起这些动作（参见lib/Target/X86/X86ISelLowering.cpp）：
+
+.. code-block :: cpp
+
+    setOperationAction(ISD::SINT_TO_FP, MVT::i8, Promote);
+    setOperationAction(ISD::SDIV, MVT::i32, Expand);
+    setOperationAction(ISD::FABS, MVT::f32, Custom);
+
 DAG到DAG的指令选择
-　　DAG到DAG的指令选择的目的，是利用模式匹配将目标无关的节点转换为目标特定的节点。指令选择的算法是局部的，每次作用SelectionDAG（基本块）的实例。
-　　作为例子，后面给出了指令选择之后我们最终的SelectionDAG结构。CopyToReg、CopyFromReg、和Register节点保持不变，直到寄存器分配。实际上，指令选择阶段甚至可能增加节点。指令选择之后，ISD::ADD节点被转换为X86指令ADD32ri8，X86ISD::RET_FLAG变为RET。
-　　Note
-　　注意，三种指令表示类型可能在同一个DAG中并存：通用的LLVM ISD节点比如ISD::ADD，目标特定的<Target>ISD节点比如X86ISD::REG_FLAG，目标物理指令比如X86::ADD32ri8。
-　　（图）
+==========================
+
+DAG到DAG的指令选择的目的，是利用模式匹配将目标无关的节点转换为目标特定的节点。指令选择的算法是局部的，每次作用SelectionDAG（基本块）的实例。
+
+作为例子，后面给出了指令选择之后我们最终的SelectionDAG结构。CopyToReg、CopyFromReg、和Register节点保持不变，直到寄存器分配。实际上，指令选择过程甚至可能增加节点。指令选择之后，ISD::ADD节点被转换为X86指令ADD32ri8，X86ISD::RET_FLAG变为RET。
+
+.. note ::
+
+    注意，三种指令表示类型可能在同一个DAG中并存：通用的LLVM ISD节点比如ISD::ADD，目标特定的<Target>ISD节点比如X86ISD::REG_FLAG，目标物理指令比如X86::ADD32ri8。
+
+（图）
+
 模式匹配
-　　每个目标都有SelectionDAGISel子类，命名为<Target_Name>DAGToDAGISel。它通过实现子类的Select方法来处理指令选择。例如SPARC中的SparcDAGToDAGISel::Select()（见lib/Target/Sparc/SparcISelDAGToDAG.cpp文件）。这个方法接收将要被匹配的SDNode参数，返回一个代表物理指令的SDNode值；否则发生一个错误。
-　　Select()方法允许用两种方式来匹配物理指令。最直接的方式是调用产生自TableGen模式的匹配代码，如下面列表中的步骤一。然而，模式可能表达不够清楚，使得有些指令的奇怪行为不能被处理。这种情况下，必须在这个方法中实现定制的C++匹配逻辑，如下面列表中的步骤二。下面详细介绍这两种方式：
-1. Select()方法调用SelectCode()。TableGen为每个目标生成SelectCode()方法，在此代码中，TableGen还生成MatcherTable，它将ISD和<Target>ISD映射为物理指令节点。这个匹配器表是从.td文件（通常为<Target>InstrInfo.td）中的指令定义生成的。SelectCode()方法以调用SelectCodeCommon()结束，这是一个目标无关的方法，它根据目标的匹配器表匹配节点。TableGen有一个专门的指令选择后端，用以生成这些方法和表：
-$ cd <llvm_source>/lib/Target/Sparc
-$ llvm-tblgen -gen-dag-isel Sparc.td -I ../../../include
+-----------------------------
+
+每个目标都有SelectionDAGISel子类，命名为<Target_Name>DAGToDAGISel。它通过实现子类的Select方法来处理指令选择。例如SPARC中的SparcDAGToDAGISel::Select()（参见lib/Target/Sparc/SparcISelDAGToDAG.cpp文件）。这个方法接收将要被匹配的SDNode参数，返回一个代表物理指令的SDNode值；否则发生一个错误。
+
+Select()方法允许用两种方式来匹配物理指令。最直接的方式是调用产生自TableGen模式的匹配代码，如下面列表中的步骤一。然而，模式可能表达不够清楚，使得有些指令的奇怪行为不能被处理。这种情况下，必须在这个方法中实现定制的C++匹配逻辑，如下面列表中的步骤二。下面详细介绍这两种方式：
+
+1.	Select()方法调用SelectCode()。TableGen为每个目标生成SelectCode()方法，在此代码中，TableGen还生成MatcherTable，它将ISD和<Target>ISD映射为物理指令节点。这个匹配器表是从.td文件（通常为<Target>InstrInfo.td）中的指令定义生成的。SelectCode()方法以调用SelectCodeCommon()结束，这是一个目标无关的方法，它根据目标的匹配器表匹配节点。TableGen有一个专门的指令选择后端，用以生成这些方法和表：
+
+.. code-block:: bash
+
+    $ cd <llvm_source>/lib/Target/Sparc
+    $ llvm-tblgen -gen-dag-isel Sparc.td -I ../../../include
+
 为每个目标的输出在<build_dir>/lib/Target/<Target>/<Target>GenDAGISel.inc C++文件中；例如，在SPARC中，可在<build_dir>/lib/Target/Sparc/SparcGenDAGISel.inc文件中获得这些方法和表。
-2. Select()方法中在SelectCode调用前提供定制的匹配代码。例如，i32节点ISD::MULHU执行两个i32的乘，产生一个i64结果，并返回高i32部分。在32位SPARC上，乘法指令SP::UMULrr在特殊寄存器Y中返回高位部分，它需要由SP::RDY指令读取它。TableGen无法表达这个逻辑，但是我们可以用下面的代码解决这个问题：
-　　  case ISD::MULHU: {
-　　    SDValue MulLHS = N->getOperand(0);
-　　    SDValue MulRHS = N->getOperand(1);
-　　    SDNode *Mul = CurDAG->getMachineNode(SP::UMULrr, dl, MVT::i32, MVT::Glue, MulLHS, MulRHS);
-　　    return CurDAG->SelectNodeTo(N, SP::RDY, MVT::i32, SDValue(Mul, 1));
-　　  }
-　　这里，N是待匹配的SDNode参数，在此上下文中，N等于ISD::MULHU。因为在这个case语句之前已经作了细致的检查，这里生成SPARC特定的opcode以替换ISD::MULHU。为此，我们通过调用CurDAG->getMachineNode()以SP::UMULrr创建一个物理指令节点。接着，通过CurDAG->SelectNodeTo()，我们创建一个SP::RDY指令节点，并将指向ISD::MULHU的结果的所有use（引用）改变为指向SP::RDY的结果。下图显示了这个例子指令选择前后的SelectionDAG结构。前面的C++代码片段是lib/Target/Sparc/SparcISelDAGToDAG.cpp中的代码的简化版本。
-　　（图）
+
+2.	Select()方法中在SelectCode调用前提供定制的匹配代码。例如，i32节点ISD::MULHU执行两个i32的乘，产生一个i64结果，并返回高i32部分。在32位SPARC上，乘法指令SP::UMULrr在特殊寄存器Y中返回高位部分，它需要由SP::RDY指令读取它。TableGen无法表达这个逻辑，但是我们可以用下面的代码解决这个问题：
+
+.. code-block :: cpp
+
+    case ISD::MULHU: {
+      SDValue MulLHS = N->getOperand(0);
+      SDValue MulRHS = N->getOperand(1);
+      SDNode *Mul = CurDAG->getMachineNode(SP::UMULrr, dl, MVT::i32, MVT::Glue, MulLHS, MulRHS);
+      return CurDAG->SelectNodeTo(N, SP::RDY, MVT::i32, SDValue(Mul, 1));
+    }
+
+这里，N是待匹配的SDNode参数，在此上下文中，N等于ISD::MULHU。因为在这个case语句之前已经作了细致的检查，这里生成SPARC特定的opcode以替换ISD::MULHU。为此，我们通过调用CurDAG->getMachineNode()以SP::UMULrr创建一个物理指令节点。接着，通过CurDAG->SelectNodeTo()，我们创建一个SP::RDY指令节点，并将指向ISD::MULHU的结果的所有use（引用）改变为指向SP::RDY的结果。下图显示了这个例子指令选择前后的SelectionDAG结构。前面的C++代码片段是lib/Target/Sparc/SparcISelDAGToDAG.cpp中的代码的简化版本。
+
+（图）
+
 可视化指令选择过程
-　　若干llc的选项可以在不同的指令选择阶段可视化SelectionDAG。如果你使用了这些选项中的任意一个，llc将生成一个.dot图，类似于本章早前展示的那样，但是你需要用dot程序来显示它，或者用dotty编辑它。你可以在www.graphviz.org的Graphviz包中找到它们。下图按照执行的顺序列出了每个选项：
-llc选项
-阶段
--view-dag-combine1-dags
-DAG结合-1之前
--view-legalize-types-dags
-类型合法化之前
--view-dag-combine-lt-dags
-类型合法化-2之后DAG结合之前
--view-legalize-dags
-合法化之前
--view-dag-combine2-dags
-DAG结合-2之前
--view-isel-dags
-指令选择之前
--view-sched-dags
-指令选择之后指令调度之前
+==============================
+
+若干llc的选项可以在不同的指令选择过程可视化SelectionDAG。如果你使用了这些选项中的任意一个，llc将生成一个.dot图，类似于本章早前展示的那样，但是你需要用dot程序来显示它，或者用dotty编辑它。你可以在www.graphviz.org的Graphviz包中找到它们。下图按照执行的顺序列出了每个选项：
+
+============================== =====================================================================
+ llc选项                        过程
+============================== =====================================================================
+-view-dag-combine1-dags	        DAG结合-1之前
+-view-legalize-types-dags       类型合法化之前
+-view-dag-combine-lt-dags       类型合法化-2之后DAG结合之前
+-view-legalize-dags             合法化之前
+-view-dag-combine2-dags         DAG结合-2之前
+-view-isel-dags                 指令选择之前
+-view-sched-dags                指令选择之后指令调度之前
+============================== =====================================================================
 
 快速指令选择
-　　LLVM还支持可选的指令选择实现，称为快速指令选择（FastISel class，位于<llvm_source>/lib/CodeGen/SelectionDAG/FastISel.cpp文件）。快速指令选择的目标是快速生成代码，以损失代码质量为代价，它适合-O0优化级别的编译哲学。通过省略复杂的合并和低级化逻辑，编译得到提速。TableGen描述也被用于简单的操作，但是更复杂的指令匹配需要目标特定的代码来处理。
-　　Note
-　　-O0编译还用了快速但非优化的寄存器分配器和调度器，以代码质量换取编译速度。我们将在下一个子小节介绍它们。
+==============================
+
+LLVM还支持可选的指令选择实现，称为快速指令选择（FastISel class，位于<llvm_source>/lib/CodeGen/SelectionDAG/FastISel.cpp文件）。快速指令选择的目标是快速生成代码，以损失代码质量为代价，它适合-O0优化级别的编译哲学。通过省略复杂的合并和低级化逻辑，编译得到提速。TableGen描述也被用于简单的操作，但是更复杂的指令匹配需要目标特定的代码来处理。
+
+.. note ::
+
+    -O0管线编译还用到了快速但非优化的寄存器分配器和调度器，以代码质量换取编译速度。我们将在下一个子小节阐述它们。
+
 调度
-　　指令选择之后，SelectionDAG结构的节点表示了物理指令——处理器直接支持它们。下面的阶段是前寄存器分配调度，工作在SelectionDAG节点（SDNode）之上。有几个不同的调度器可供选择，它们都是ScheduleDAGSDNodes的子类（见文件<llvm_source>/lib/CodeGen/SelectionDAG/ScheduleDAGSDNodes.cpp）。在llc工具中可以通过-pre-RA-sched=<scheduler>选项选择调度器类型。可能的<scheduler>值如下：
-* list-ilp，list-hybrid，source，和list-burr：这些选项指定表调度算法，它由ScheduleDAGRRList class实现（见文件<llvm_source>/lib/CodeGen/SelectionDAG/ScheduleDAGRRList.cpp）。
-* fast：ScheduleDAGFast class（<llvm_source>/lib/CodeGen/SelectionDAG/ScheduleDAGFast.cpp）实现了一个非优化但快速的调度器。
-* view-td：一个VLIW特定的调度器，由ScheduleDAGVLIW class实现（见文件<llvm_source>/lib/CodeGen/SelectionDAG/ScheduleDAGVLIW.cpp）。
-　　default选项为目标选择一个预定义的最佳的调度器，而linearize选项不作调度。可获得的调度器可能使用指令行程表和风险识别器的信息，以更好地调度指令。
-　　Note
-　　在代码生成器中有三个不同的调度器：两个在寄存器分配之前，一个在寄存器分配之后。第一个工作在SelectionDAG节点之上，而其它两个工作在机器指令之上，本章将进一步解释它们。
+******************************
+
+指令选择之后，SelectionDAG结构的节点表示了物理指令——处理器直接支持它们。下一个阶段是前寄存器分配调度器，工作在SelectionDAG节点（SDNode）之上。有几个不同的调度器可供选择，它们都是ScheduleDAGSDNodes的子类（见文件<llvm_source>/lib/CodeGen/SelectionDAG/ScheduleDAGSDNodes.cpp）。在llc工具中可以通过-pre-RA-sched=<scheduler>选项选择调度器类型。可能的<scheduler>值如下：
+
+* ``list-ilp，list-hybrid，source，和list-burr``：这些选项指定表调度算法，它由ScheduleDAGRRList class实现（见文件<llvm_source>/lib/CodeGen/SelectionDAG/ScheduleDAGRRList.cpp）。
+* ``fast``：ScheduleDAGFast class（<llvm_source>/lib/CodeGen/SelectionDAG/ScheduleDAGFast.cpp）实现了一个非优化但快速的调度器。
+* ``view-td``：一个VLIW特定的调度器，由ScheduleDAGVLIW class实现（见文件<llvm_source>/lib/CodeGen/SelectionDAG/ScheduleDAGVLIW.cpp）。
+
+default选项为目标选择一个预定义的最佳的调度器，而linearize选项不作调度。可获得的调度器可能使用指令行程表和风险识别器的信息，以更好地调度指令。
+
+.. note ::
+
+    在代码生成器中有三个不同的调度器：两个在寄存器分配之前，一个在寄存器分配之后。第一个工作在SelectionDAG节点之上，而其它两个工作在机器指令之上，本章将进一步解释它们。
+
 指令延迟表
-　　有些目标提供了指令行程表，表示指令延迟和硬件管线信息。调度器在作调度决策时利用这些属性以最大化吞吐量，避免性能处罚。这些信息由每个目标目录中的TableGen文件，通常命名为<Target>Schedule.td（例如X86Schedule.td）。
-　　LLVM提供了ProcessorItineraries TableGen class，在<llvm_source>/include/llvm/Target/TargetItinerary.td，如下：
-class ProcessorItineraries<list<FuncUnit> fu, list<Bypass> bp,
-list<InstrItinData> iid> {
-  ...
-}
-　　目标可能为一个芯片或者处理器家族定义处理器行程表。要描述它们，目标必须提供函数单元（FuncUnit）列表、管线支路（Bypass）、和指令行程数据（InstrItinData）。例如，ARM Cortex A8指令的行程表在<llvm_source>/lib/Target/ARM/ARMScheduleA8.td，如下
-def CortexA8Itineraries : ProcessorItineraries<
-  [A8_Pipe0, A8_Pipe1, A8_LSPipe, A8_NPipe, A8_NLSPipe],
-  [], [
-  ...
-  InstrItinData<IIC_iALUi ,[InstrStage<1, [A8_Pipe0, A8_Pipe1]>], [2, 2]>,
-  ...
-]>;
-　　这里，我们没有看到支路（bypass）。我们看到了这个处理器的函数单元列表（A8_Pipe0，A8_Pipe1等），以及来自类型IIC_iALUi的指令行程数据。这种类型是形如reg = reg + immediate的二元运算指令的class，例如ADDri和SUBri指令。这些指令的执行时间是一个机器时钟周期，以完成A8_Pipe0和A8_Pipe1函数单元，如InstrStage<1, [A8_Pipe0, A8_Pipe1]定义的那样。
-　　后面，列表[2, 2]表示指令发射之后读取或者定义每个操作数所用的时钟周期。此处，目标寄存器（index 0）和源寄存器（index 1）都在2个时钟周期之后可用。
-风险检测
-　　风险识别器利用处理器指令行程表的信息计算风险。ScheduleHazardRecognizer class为风险识别器的实现提供了接口，ScoreboardHazardRecognizer subclass实现了记分牌风险识别器（见文件<llvm_source>/lib/CodeGen/ScoreboardHazardRecognizer.cpp），它是LLVM的默认识别器。
-　　目标提供自己的识别器是允许的。这是必需的，因为TableGen可能无法表达具体的约束，这时必须提供定制的实现。例如，ARM和PowerPC都提供了ScoreboardHazardRecognizer subclass。
-调度单元
-　　调度器在寄存器分配之前和之后运行。然而，只有前者可使用SDNode指令表示，而后者使用MachineInstr class。为了兼顾SDNode和MachineInstr，SUnit class（见文件<llvm_source>/include/llvm/CodeGen/ScheduleDAG.h）抽象了背后的指令表示，作为指令调度期间的单元。llc工具可以用选项-view-sunit-dags输出调度单元。
-机器指令
-　　寄存器分配器工作在一种由MachineInstr class（简称MI）给出的指令表示之上，它的定义在<llvm_source>/include/llvm/CodeGen/MachineInstr.h。在指令调度之后，InstrEmitter Pass会被运行，它将SDNode格式转换为MachineInstr格式。如名字的含义，这种表示比IR指令更接近实际的目标指令。与SDNode格式及其DAG形式不同，MI格式是程序的三地址表示，即指令的序列而不是DAG，这让编译器能够高效地表达一个具体的调度决定，也就是决定每个指令的顺序。每个MI有一个操作码（opcode）数字和几个操作数，操作码只对一个具体的后端有意义。
-　　利用llc选项-print-machineinstrs，可以输出所有注册的Pass之后的机器指令，或者利用选项-print-machineinstrs=<pass-name>输出一个特定的Pass之后的机器指令。我们从LLVM源代码中查找这些Pass的名字。为此，进入LLVM源代码文件夹，运行grep查找Pass注册它们的名字时常用到的宏：
-$ grep -r INITIALIZE_PASS_BEGIN * CodeGen/
-PHIElimination.cpp:INITIALIZE_PASS_BEGIN(PHIElimination, "phi-node-elimination"
-(...)
-　　例如，看下面sum.bc的每个Pass之后的SPARC机器指令：
-$ llc -march=sparc -print-machineinstrs sum.bc
-Function Live Ins: %I0 in %vreg0, %I1 in %vreg1
-BB#0: derived from LLVM BB %entry Live Ins: %I0 %I1
-%vreg1<def> = COPY %I1; IntRegs: %vreg1
-%vreg0<def> = COPY %I0; IntRegs: %vreg0
-%vreg2<def> = ADDrr %vreg1, %vreg0; IntRegs: %vreg2, %vreg1, %vreg0
-%I0<def> = COPY %vreg2; IntRegs: %vreg2
-RETL 8, %I0<imp-use>
-　　MI包含关于指令的重要元信息：它存储被使用和被定义的寄存器，区别寄存器和内存操作数（以及其它类型），存储指令类型（分支、返回、调用、结束，等等），预测运算是否可交换，等等。保存这些信息甚至在像MI这样的低层次是重要的，因为在InstrEmitter之后代码输出之前运行的Pass要根据这些字段执行它们的分析。
-寄存器分配
-　　寄存器分配的基本任务是将无限数量的虚拟寄存器转换为有限的物理寄存器。由于目标的物理寄存器数量有限，有些虚拟寄存器被安排到内存位置，即spill slot。然而，有些MI代码可能已经用到了物理寄存器，甚至在寄存器分配之前。当机器指令需要将结果写到特定的寄存器，或者出于ABI的需求，这种情况就会发生。对此，寄存器分配器承认先前的分配行为，在此基础上将其余的物理寄存器分配给剩余的虚拟寄存器。
-　　LLVM寄存器分配器的另一个重要任务是解构IR的SSA形式。直到此时，机器指令可能还包含phi指令，它们从原始的LLVM IR复制而来，为了支持SSA形式它们是必需的。如此，你可以方便地在SSA之上实现机器特定的优化。然而，传统的将phi指令转换为常规指令的方法，是用复制指令替换它们。这样，SSA解构不能晚于寄存器分配，这个阶段将会分配寄存器并且消除冗余的复制操作。
-　　LLVM有四种寄存器分配方法，这可以在llc中选择，通过-regalloc=<regalloc_name>选项。可选的<regalloc_name>有：pbqp，greedy，basic，和fast。
-　　pbqp：这种方法将寄存器分配映射为分区布尔二次规划（PBQP: Partitioned Boolean Quadratic Programming）问题。一个PBQP解决方法用于将这个问题的结果映射回寄存器。
-　　greedy：这种方法给出一种高效的全局（函数范围）寄存器分配实现，支持活跃区域分割以最小化挤出（spill）。这里给出了关于这个算法的生动的解释：http://blog.llvm.org/2011/09/greedy-register-allocation-in-llvm-30.html。
-　　basic：这种方法是一种很简单的分配器，并提供扩展接口。因此，它为开发新的寄存器分配器提供基础，被用作寄存器分配效率的基线。在前面的关于greedy算法的blog链接中，也有关于这个算法的内容。
-　　fast：这种分配器是局部的（作用于各个基本块），它尽量地将值保持在寄存器中并重用它们。
-　　default分配器被映射为这四种方法的其中之一，根据当前的优化级别（-O选项）作出选择。
-　　虽然寄存器分配器在一个单一的Pass中实现，不管选择何种算法，但是它仍然依赖其它的分析，这构成了分配器框架。分配器框架用到一些Pass，这里我们介绍寄存器合并器和寄存器重写，解释它们的概念。下图阐明了这些Pass如何相互交互。
-　　（图）
-寄存器合并器
-　　寄存器合并器通过结合值区间（interval）去除冗余的复制指令（COPY）。RegisterCoalescer class实现了这种合并（见lib/CodeGen/RegisterCoalescer.cpp），它是一个机器函数Pass。机器函数Pass类似于IR Pass，它运行在每个函数之上，只是处理的不是IR指令，而是MachineInstr指令。在合并期间，方法joinAllIntervals()复制指令的列表。方法joinCopy()从机器复制指令创建CoalescerPair实例，并且在可能的时候合并掉复制指令。
-　　值区间（interval）表示程序中的一对点，开始和结束，它从一个值被产生时开始，直到这个值最终被使用，也就是说，被消灭（killed），期间它被保存在临时位置上。让我们看看合并器运行在我们的sum.bc bitcode例子上时会发生什么。
-　　我们利用llc中的regalloc调试选项来查看合并器的调试输出：
-$ llc -march=sparc -debug-only=regalloc sum.bc 2>&1 | head -n30
-　　...
-　　Tip
-　　你可以用-debug-only选项对一个特定的LLVM pass或者组件开启内部调试消息。为了找出调试的组件，可在LLVM源代码文件夹中运行grep -r "DEBUG_TYPE" *。DEBUG_TYPE定义标记选项，它激活当前文件的调试消息，例如在寄存器分配的实现文件中有#define DEBUG_TYPE "regalloc"。注意，我们用2>&1重定向了打印调试信息的标准错误输出到标准输出。然后，管道标准输出（包含调试信息）到head -n30，只打印前面的30行。以这种方式，我们控制了显示在终端上的信息量，因为调试信息可能相当繁琐。
-　　首先让我们来看** MACHINEINSTRS **输出。这打印了作为寄存器合并器输入的所有机器指令——如果你用-print-machine-insts=phi-node-elimination选项输出（运行于合并器之前的）phi节点消除pass之后的机器指令，将得到相同的内容。然而，合并器调试器的输出，用索引信息给每条机器指令作提示：0B, 16B, 32B等。我们需要它们以正确地解释值区间（interval）。
-　　这些索引也被称为slot indexes，给每个活跃区域（live range）赋予一个不同的数字。字母B对应基本块（block），被用于活跃区域进入或者离开一个基本块的边界。在此例中，我们的指令打印为索引跟着B，因为这是默认单元（slot）。在值区间中，有一个不同的单元，字母r，它表示寄存器，用于指示普通寄存器的使用或者定义。
-　　通过阅读机器指令序列，我们已经知道了寄存器分配器超级Pass（若干小Pass的组合）的重要内容：%vreg0, %vreg1, %vreg2, %vreg3都是虚拟寄存器，需要为它们分配物理寄存器。因此，最多要使用4个物理寄存器，除了%I0和%I1之外，它们已经在使用了。其原因是为了遵守ABI调用惯例，它要求函数参数存于这些寄存器中。由于活跃变量分析Pass在寄存器合并之前运行，代码也标注了活跃变量信息，展示了每个寄存器在何处被定义和杀死，这让我们能够看清楚哪些寄存器相互冲突，即哪些寄存器同时活跃，需要保持在不同的物理寄存器中。
-　　另一方面，合并器不依赖寄存器分配器的结果，它只是寻找寄存器复制。对于寄存器到寄存器的复制，合并器会尝试结合源寄存器和目标寄存器的值区间，让它们保持在相同的物理寄存器中，消除复制指令，就像索引16和32的复制。
-　　紧跟着*** INTERVALS ***的消息，来自寄存器合并所依赖的另一个分析：活跃值区间分析（不同于活跃变量分析），它由 lib/CodeGen/LiveIntervalAnalysis.cpp实现。合并器需要知道每个虚拟寄存器所活跃的值区间，这样才能发现哪些值区间可以合并。例如，我们可以从输出中看到，虚拟寄存器%vreg0的值区间被确定为[32r:48r:0)。
-　　这意味着这个半开放的值区间%vreg0在32处被定义，在48处被杀死。48r后面的数字0是一个代码，它显示这个值区间在何处被第一次定义，这个意思恰好在值区间后面被打印出来：o:32r。这样，定义o出现在索引32，这是我们已经知道的。然而，这可以让我们有效地追踪原始定义，监控值区间是否分裂。最后，RegMasks显示了调用现场，它清理了很多寄存器，是冲突的一个大源头。因为这个函数中没有任何调用，所以没有RegMasks位置。
-　　通过观察值区间，我们有喜人的发现：%I0寄存器的值区间是[0B, 32r:0)，%vreg0寄存器的值区间是[32r, 48r:0)，在32处，有一条复制指令，它复制%I0到%vreg0。这就是合并发生的前提：结合值区间[0B, 32r:0)和[32r, 48r:0)，赋给%I0和%vreg0相同的寄存器。
-　　下面，让我们打印其余的调试输出，看看发生了什么：
-　　$ llc -match=sparc -debug-only=regalloc sum.bc
-　　...
-　　entry:
-　　16B %vreg1<def> = COPY %I1;
-　　IntRegs: %vreg1
-　　    Considering merging %vreg1 with %I1
-　　    Can only merge into reserved registers.
-　　32B %vreg0<def> = COPY %I0;
-　　IntRegs:%vreg0
-　　    Considering merging %vreg0 with %I0
-　　    Can only merge into reserved registers.
-　　64B %I0<def> = COPY %vreg2;
-　　IntRegs:%vreg2
-　　    Considering merging %vreg2 with %I0
-　　    Can only merge into reserved registers.
-　　...
-　　我们看到，合并器考虑结合%vreg0和%I0，如我们希望的那样。然而，当寄存器是物理寄存器时，例如%I0，它实行了特殊的规则。物理寄存器必须保留以结合它的值区间。这意味着，不能将物理寄存器分配给其它的活跃区域，而%I0的情况并非如此。因此，合并器放弃了这个机会，它担心过早地把%I0分配给这整个区间到最后可能无法获益，留由寄存器分配器作这个决定。
-　　因此，程序sum.bc没有合并的机会。虽然它试图结合虚拟寄存器和函数参数寄存器，但是失败了，因为在此阶段它只能将虚拟寄存器和保留的——非常规可分配的——物理寄存器相结合。
-虚拟寄存器重写
-　　寄存器分配Pass为每个虚拟寄存器选择物理寄存器。随后，VirtRegMap保存了寄存器分配的结果，它将虚拟寄存器映射到物理寄存器。接着，虚拟寄存器重写Pass——由VirtRegRewriter class实现，见<llvm_source>/lib/CodeGen/VirtRegMap.cpp——利用VirtRegMap将虚拟寄存器替换为物理寄存器。可能相应地生成spill代码。而且，剩下的恒等复制reg = COPY reg会被删除。例如，让我们利用-debug-only=regalloc选项分析分配器和重写器如何处理sum.bc。首先，greedy分配器输出如下文本：
-...
-assigning %vreg1 to %I1: I1
-...
-assigning %vreg0 to %I0: I0
-...
-assigning %vreg2 to %I0: I0
-　　虚拟寄存器1, 0, 2分别被分配以物理寄存器%I1, %I0, %I0。VirtRegMap输出中给出了相同的内容，如下：
-[%vreg0 -> %I0] IntRegs
-[%vreg1 -> %I1] IntRegs
-[%vreg2 -> %I0] IntRegs
-　　然后，重写器将所有虚拟寄存器替换为物理寄存器，并删除恒等的复制：
-> %I1<def> = COPY %I1
-Deleting identity copy.
-> %I0<def> = COPY %I0
-Deleting identity copy.
-...
-　　我们看到，尽管合并器无法去除这些复制，但是寄存器分配器能够为两个活跃区域赋以相同的寄存器，并删除复制操作，如我们希望的那样。最终，作为结果的sum函数的机器指令极大地简化了：
-0B BB#0: derived from LLVM BB
-%entry
-　　Live Ins: %I0 %I1
-　　48B %I0<def> = ADDrr %I1<kill>, %I0<kill>
-　　80B RETL 8, %I0<imp-use>
-　　注意，复制指令被删除了，没有剩下虚拟寄存器。
-　　Note
-　　只有当LLVM以debug模式编译（通过在配置时刻设置--disable-optimized）后，才能使用llc程序的选项-debug或者-debug-only=<name>。你可以在第1章（编译和安装LLVM）的Building and installing LLVM小节找到更多相关内容。
-　　在任何编译器中，寄存器分配和指令调度都是天生的敌人。寄存器分配的任务是尽可能让活跃区域短一点，减少冲突图的边的数目，而减少所需寄存器的数目，以避免挤出（spill）。因而，寄存器分配器喜欢以串行的模式排列指令（让指令紧跟在其所依赖指令的后面），因为用这种方法代码所用的寄存器相对较少。指令调度的任务是相反的：为了提升指令级别的并行，需要尽可能地让很多无关而并行的运算保持活跃，要用很多寄存器保存中间值，增加活跃区域之间冲突的数量。设计一个有效的算法来协同地处理指令调度和寄存器分配，是一个开放的研究课题。
-目标钩子
-　　在合并的时候，虚拟寄存器来自相容的寄存器类别，需要被成功地合并。代码生成器从目标特定的描述获得这类信息，而描述由抽象方法给出。分配器可以从TargetRegisterInfo的子类（例如X86GenRegisterInfo）获得所有关于一个寄存器的信息。这些信息包括，是否为保留的，父寄存器类别，是物理的还是虚拟的寄存器。
-　　<Target>InstrInfo类是另一个提供寄存器分配器所需要的目标特定的信息的数据结构。这里讨论一些例子：
-　　<Target>InstrInfo的isLoadFromStackSlot()和isStoreToStackSlot()方法，用于在挤出代码生成期间发现机器指令访问栈单元的内存。
-　　此外，它用storeRegToStackSlot()和loadRegFromStackSlot()方法生成访问栈单元的目标特定的内存访问指令。
-　　COPY指令可能在寄存器重写之后保留下来，因为它们没有被合并掉，而且不是同一的复制。在这种情况下，copyPhysReg()方法用于生成目标特定的寄存器复制，在需要时甚至在不同寄存器类别之间。SparcInstrInfo::copyPhysReg()的例子是这样的：
-　　if (SP::IntRegsRegClass.contains(DestReg, SrcReg))
-　　  BuildMI(MBB, I, DL, get(SP::ORrr), DestReg).addReg(SP::G0)
-　　    .addReg(SrcReg, getKillRegState(KillSrc));
-　　...
-　　BuildMI()方法在代码生成器中到处可见，它用于生成机器指令。在这个例子中，SP::ORrr指令用于复制一个CPU寄存器到另一个CPU寄存器。
-序曲和尾声
-　　完整的函数都需要序曲（prologue）和尾声（epilogue）。前者在函数的开始处设置堆栈帧和被调用者保存的寄存器，而后者在函数返回前清理堆栈帧。在例子sum.bc中，当为SPARC编译时，插入序曲和尾声之后，机器指令看起来是这样的：
-　　%06<def> = SAVEri %06, -96
-　　%I0<def> = ADDrr %I1<kill>, %I0<kill>
-　　%G0<def> = RESTORErr %G0, %G0
-　　RETL 8, %I0<imp-use>
-　　此例中，SAVEri指令是序曲，RESTORErr是尾声，执行堆栈帧相关的设置和清理。序曲和尾声的生成是目标特定的，由方法<Target>FrameLowering::emitPrologue()和<Target>FrameLowering::emitEpilogue()定义（参见文件<llvm_source>/lib/Target/<Target>/<Target>FrameLowering.cpp）。
-帧索引
-　　LLVM在代码生成期间用到一个虚拟堆栈帧，利用帧索引引用堆栈元素。序曲的插入会分配堆栈帧，给出充足的目标特定的信息，让代码生成器得以将虚拟帧索引替换为实际的（目标特定）堆栈引用。
-　　<Target>RegisterInfo类的eliminateFrameIndex()方法实现了所述替换，就是检查所有包含堆栈引用（通常为load和store）的机器指令，将每个帧索引转换为实际的堆栈偏移。当需要额外的堆栈偏移算术运算时，也会生成额外的指令。参见文件<llvm_source>/lib/Target/<Target>/<Target>RegisterInfo.cpp作为例子。
-理解机器代码框架
-　　机器代码（简称MC）类包含整个低层操作函数和指令的框架。对比其它的后端组件，这是一个新设计的框架，助于创建基于LLVM的汇编器和反汇编器。之前，LLVM缺少一个集成的汇编器，编译过程只能进行到汇编语言生成这一步，它创建一个汇编文本文件，要依靠外部的工具继续剩余的编译工作（汇编器和链接器）。
-MC指令
-　　在MC框架中，机器代码指令（MCInst）替代了机器指令（MachineInstr）。在文件<llvm_source>/include/llvm/MC/MCInst.h中定义的MCInst类，定义了对指令的轻量表示。对比MI（机器指令），MCInst记录较少的程序信息。例如，MCInst实例不仅可以由后端创建，而且可以由反汇编器只根据二进制代码创建，注意反汇编器是一个缺少指令上下文信息的环境。事实上，它融入了汇编器的理念，也就是说，其目的不是应用丰富的优化，而是组织指令生成目标文件。
-　　每个操作数可以是一个寄存器，立即数（整数或浮点数），表达式（表示为MCExpr），或者另一个MCInstr实例。表达式用于表示标记（label）运算和重定位。MI指令在代码生成阶段的早期被转换为MCInst实例，这是下个小节的主题。
-代码生成
-　　代码生成阶段处于所有后寄存器分配Pass之后。尽管名字似乎让人难于理解，代码生成从汇编打印（AsmPrinter）开始。下面的示意图给出了从MI指令到MCInst接着到汇编或者二进制指令的步骤：
-　　（图）
-　　让我们逐一介绍上图所示的步骤：
-1. AsmPrinter是一个机器函数Pass，它首先生成函数头，然后遍历所有基本块，每次发送一个MI指令到方法EmitInstruction()，以作进一步处理。每个目标会提供一个AsmPrinter子类，它重载这个方法。
-2. <Target>AsmPrinter::EmitInstruction()方法接收MI指令作为输入，凭借MCInstLowering接口将它转变为MCInst实例——每个目标会提供这个接口的子类，自定义生成这些MCInst实例的程序。
-3. 此刻，可以接着生成汇编或者二进制指令。MCStreamer类处理MCInst指令流，通过两个子类，MCAsmStreamer和MCObjectStreamer，将指令输出为所选的格式。前者将MCInst转换为汇编语言，而后者将它转换为二进制指令。
-4. 如果生成汇编指令，就会调用MCAsmStreamer::EmitInstruction()，由一个目标特定的MCInstPrinter子类打印汇编指令到文件。
-5. 如果生成二进制指令，MCObjectStreamer::EmitInstruction()的一个目标（target）专用的、目标代码（object）特定的版本就会调用LLVM目标代码汇编器。
-6. 汇编器会利用一个专用的MCCodeEmitter::EncodeInstruction()方法，蜕变MCInst实例，编码和输出二进制指令数据块到文件，以一种目标特定的方式。
-　　此外，你可以用llc工具输出MCInst片段。例如，要将MCInst编码为汇编注释，可以用下面的命令：
-　　$ llc sum.bc -march=x86-64 -show-mc-inst -o -
-　　...
-　　pushq %rbp        ## <MCInst #2114 PUSH64r
-　　                    ## <MCOperand Reg: 107>>
-　　...
-　　然而，如果你想要将每条指令的二进制编码显示为汇编注释，就用下面的命令：
-　　$ llc sum.bc -march=x86-64 -show-mc-encoding -o -
-　　...
-　　push %rbp         ## encoding: [0x55]
-　　...
-　　llvm-mc工具还让你能够测试和使用MC框架。例如，为了查明一条特定指令的汇编编码，使用选项--show-encoding。下面是x86指令的一个例子：
-　　$ echo "movq 48879(,%riz), %rax" | llvm-mc -triple=x86_64 --show-encoding
-　　    #encoding:
-　　[0x48, 0x8b, 0x04, 0x25, 0xef, 0xbe, 0x00, 0x00]
-　　这个工具还提供了反汇编的功能，如下：
-　　$ echo "0x8d 0x4c 0x24 0x04" | llvm-mc --disassemble -triple=x86_64
-　　    leal 4(%rsp), %ecx
-　　另外，选项--show-inst为经过汇编或反汇编的指令显示MCInst指令：
-　　$ echo "0x8d 0x4c 0x24 0x04" | llvm-mc --disassemble --show-inst -triple=x86_64
-　　    leal 4(%rsp), %ecx    # <MCInst #1105 LEA64_32r
-　　                           # <MCOperand Reg:46>
-　　                           # <MCOperand Reg:115>
-　　                           # <MCOperand Imm:1>
-　　                           # <MCOperand Reg:0>
-　　                           # <MCOperand Imm:4>
-　　                           # <MCOperand Reg:0>>
-　　MC框架让LLVM能够为经典的目标文件阅读器提供可选择的工具。例如，目前默认编译LLVM会安装llvm-objdump和llvm-readobj工具。两者都用到了MC反汇编库，实现了跟GNU Binutils软件包中的等价物（objdump和readelf）相类似的功能。
-编写你自己的机器Pass
-　　在这个章节，我们将示范如何编写一个定制的机器Pass，它正好在代码生成之前，统计每个函数有多少机器指令。不同于IR Pass，你不能用opt工具运行这个Pass，或通过命令行加载并安排它运行。机器Pass由后端代码管理。因此，在实践中，我们修改一个已有的后端来运行并观察我们定制的Pass。我们选择SPARC后端。
-　　回想第3章（工具和设计）的演示插件式Pass接口小节，从这章的第一张图的白框中，有很多选项供我们选择决定在何处运行我们的Pass。为了应用这些方法，我们应该找到我们的后端实现的TargetPassConfig子类。如果你用grep，就会在SparcTargetMachine.cpp中找到它：
-　　$ cd <llvmsource>/lib/Target/Sparc
-　　$ vim SparcTargetMachine.cpp  # 使用你喜欢的编辑器
-　　观察这个从TargetPassConfig派生的SparcPassConfig类，我们看到它覆写（override）了addInstSelector()和addPreEmitPass()，但是我们可以覆写很多方法，如果我们想要在其它的地方添加一个Pass（见链接http://llvm.org/doxygen/html/classllvm_1_1TargetPassConfig.html）。我们将在代码生成前运行我们的Pass，因此在addPreEmitPass()中添加代码：
-bool SparcPassConfig::addPreEmitPass() {
-  addPass(createSparcDelaySlotFillerPass(
-    getSparcTargetMachine()));
-  addPass(createMyCustomMachinePass());
-}
+================================
 
-　　在上面的代码中，高亮的行是我们额外添加的，它通过调用函数createMyCustomMachinePass()来添加我们的Pass。然而，这个函数还未定义。我们将增加一个新的源代码文件，编写Pass代码，也会定义这个函数。于是，创建一个文件，名为MachineCountPass.cpp，填写下面的内容：
+有些目标提供了指令行程表，表示指令延迟和硬件管线信息。调度器在作调度决策时利用这些属性以最大化吞吐量，避免性能处罚。这些信息由每个目标目录中的TableGen文件，通常命名为<Target>Schedule.td（例如X86Schedule.td）。
 
-#define DEBUG_TYPE "machinecount"
-#include "Sparc.h"
-#include "llvm/Pass.h"
-#include "llvm/CodeGen/MachineBasicBlock.h"
-#include "llvm/CodeGen/MachineFunction.h"
-#include "llvm/CodeGen/MachineFunctionPass.h"
-#include "llvm/Support/raw_ostream.h"
+LLVM提供了ProcessorItineraries TableGen class，在<llvm_source>/include/llvm/Target/TargetItinerary.td，如下：
 
-using namespace llvm;
+.. code-block :: cpp
 
-namespace {
-  class MachineCountPass : public MachineFunctionPass {
-  public:
-    static char ID;
-    MachineCountPass() : MachineFunctionPass(ID) {}
-
-    virtual bool runOnMachineFunction(MachineFunction &MF) {
-      unsigned num_instr = 0;
-      for (MachineFunction::const_iterator I = MF.begin(), E = MF.end(); I != E; ++I) {
-        for (MachineBasicBlock::const_iterator BBI = I->begin(), BBE = I->end(); BBI != BBE; ++BBI) {
-          ++num_instr;
-        }
-      }
-      errs() << "mcount --- " << MF.getName() << " has " << num_instr << " instructions.\n";
-      return false;
+    class ProcessorItineraries<list<FuncUnit> fu, list<Bypass> bp,
+    list<InstrItinData> iid> {
+      ...
     }
-  };
-}
 
-FunctionPass *llvm::createMyCustomMachinePass() {
-  return new MachineCountPass();
-}
+目标可能为一个芯片或者处理器家族定义处理器行程表。要描述它们，目标必须提供函数单元（FuncUnit）列表、管线支路（Bypass）、和指令行程数据（InstrItinData）。例如，ARM Cortex A8指令的行程表在<llvm_source>/lib/Target/ARM/ARMScheduleA8.td，如下
 
-char MachineCountPass::ID = 0;
-static RegisterPass<MachineCountPass> X("machinecount", "Machine Count Pass");
+.. code-block :: cpp
 
-　　在第1行中，我们定义了宏DEBUG_TYPE，这样以后我们就可以通过选项-debug-only=machinecount调试这个Pass。然而，在这个例子中，没有用到调试输出。剩余的代码和我们前一章为IR Pass写的很相似。不同之处如下：
+    def CortexA8Itineraries : ProcessorItineraries<
+      [A8_Pipe0, A8_Pipe1, A8_LSPipe, A8_NPipe, A8_NLSPipe],
+      [], [
+      ...
+      InstrItinData<IIC_iALUi ,[InstrStage<1, [A8_Pipe0, A8_Pipe1]>], [2, 2]>,
+      ...
+    ]>;
+
+这里，我们没有看到支路（bypass）。我们看到了这个处理器的函数单元列表（A8_Pipe0，A8_Pipe1等），以及来自类型IIC_iALUi的指令行程数据。这种类型是形如reg = reg + immediate的二元运算指令的class，例如ADDri和SUBri指令。这些指令的执行时间是一个机器时钟周期，以完成A8_Pipe0和A8_Pipe1函数单元，如InstrStage<1, [A8_Pipe0, A8_Pipe1]定义的那样。
+
+后面，列表[2, 2]表示指令发射之后读取或者定义每个操作数所用的时钟周期。此处，目标寄存器（index 0）和源寄存器（index 1）都在2个时钟周期之后可用。
+
+风险检测
+====================================
+
+风险识别器利用处理器指令行程表的信息计算风险。ScheduleHazardRecognizer class为风险识别器的实现提供了接口，ScoreboardHazardRecognizer subclass实现了记分牌风险识别器（见文件<llvm_source>/lib/CodeGen/ScoreboardHazardRecognizer.cpp），它是LLVM的默认识别器。
+
+目标提供自己的识别器是允许的。这是必需的，因为TableGen可能无法表达具体的约束，这时必须提供定制的实现。例如，ARM和PowerPC都提供了ScoreboardHazardRecognizer subclass。
+
+调度单元
+====================================
+
+调度器在寄存器分配之前和之后运行。然而，只有前者可使用SDNode指令表示，而后者使用MachineInstr class。为了兼顾SDNode和MachineInstr，SUnit class（见文件<llvm_source>/include/llvm/CodeGen/ScheduleDAG.h）抽象了背后的指令表示，作为指令调度期间的单元。llc工具可以用选项-view-sunit-dags输出调度单元。
+
+机器指令
+************************************
+
+寄存器分配器工作在一种由MachineInstr class（简称MI）给出的指令表示之上，它的定义在<llvm_source>/include/llvm/CodeGen/MachineInstr.h。在指令调度之后，InstrEmitter Pass会被运行，它将SDNode格式转换为MachineInstr格式。如名字的含义，这种表示比IR指令更接近实际的目标指令。与SDNode格式及其DAG形式不同，MI格式是程序的三地址表示，即指令的序列而不是DAG，这让编译器能够高效地表达一个具体的调度决定，也就是决定每个指令的顺序。每个MI有一个操作码（opcode）数字和几个操作数，操作码只对一个具体的后端有意义。
+
+利用llc选项-print-machineinstrs，可以输出所有注册的Pass之后的机器指令，或者利用选项-print-machineinstrs=<pass-name>输出一个特定的Pass之后的机器指令。我们从LLVM源代码中查找这些Pass的名字。为此，进入LLVM源代码文件夹，运行grep查找Pass注册它们的名字时常用到的宏：
+
+.. code-block:: bash
+
+    $ grep -r INITIALIZE_PASS_BEGIN * CodeGen/
+    PHIElimination.cpp:INITIALIZE_PASS_BEGIN(PHIElimination, "phi-node-elimination"
+    (...)
+
+例如，看下面sum.bc的每个Pass之后的SPARC机器指令：
+
+.. code-block:: bash
+
+    $ llc -march=sparc -print-machineinstrs sum.bc
+    Function Live Ins: %I0 in %vreg0, %I1 in %vreg1
+    BB#0: derived from LLVM BB %entry Live Ins: %I0 %I1
+    %vreg1<def> = COPY %I1; IntRegs: %vreg1
+    %vreg0<def> = COPY %I0; IntRegs: %vreg0
+    %vreg2<def> = ADDrr %vreg1, %vreg0; IntRegs: %vreg2, %vreg1, %vreg0
+    %I0<def> = COPY %vreg2; IntRegs: %vreg2
+    RETL 8, %I0<imp-use>
+
+MI包含关于指令的重要元信息：它存储被使用和被定义的寄存器，区别寄存器和内存操作数（以及其它类型），存储指令类型（分支、返回、调用、结束，等等），预测运算是否可交换，等等。保存这些信息甚至在像MI这样的低层次是重要的，因为在InstrEmitter之后代码输出之前运行的Pass要根据这些字段执行它们的分析。
+
+寄存器分配
+****************************************
+
+寄存器分配的基本任务是将无限数量的虚拟寄存器转换为有限的物理寄存器。由于目标的物理寄存器数量有限，有些虚拟寄存器被安排到内存位置，即spill slot。然而，有些MI代码可能已经用到了物理寄存器，甚至在寄存器分配之前。当机器指令需要将结果写到特定的寄存器，或者出于ABI的需求，这种情况就会发生。对此，寄存器分配器承认先前的分配行为，在此基础上将其余的物理寄存器分配给剩余的虚拟寄存器。
+
+LLVM寄存器分配器的另一个重要任务是解构IR的SSA形式。直到此时，机器指令可能还包含phi指令，它们从原始的LLVM IR复制而来，为了支持SSA形式它们是必需的。如此，你可以方便地在SSA之上实现机器特定的优化。然而，传统的将phi指令转换为常规指令的方法，是用复制指令替换它们。这样，SSA解构不能晚于寄存器分配，这个阶段将会分配寄存器并且消除冗余的复制操作。
+
+LLVM有四种寄存器分配方法，这可以在llc中选择，通过-regalloc=<regalloc_name>选项。可选的<regalloc_name>有：pbqp，greedy，basic，和fast。
+
+pbqp：这种方法将寄存器分配映射为分区布尔二次规划（PBQP: Partitioned Boolean Quadratic Programming）问题。一个PBQP解决方法用于将这个问题的结果映射回寄存器。
+greedy：这种方法给出一种高效的全局（函数范围）寄存器分配实现，支持活跃区域分割以最小化挤出（spill）。这里给出了关于这个算法的生动的解释：http://blog.llvm.org/2011/09/greedy-register-allocation-in-llvm-30.html。
+basic：这种方法是一种很简单的分配器，并提供扩展接口。因此，它为开发新的寄存器分配器提供基础，被用作寄存器分配效率的基线。在前面的关于greedy算法的blog链接中，也有关于这个算法的内容。
+fast：这种分配器是局部的（作用于各个基本块），它尽量地将值保持在寄存器中并重用它们。
+
+default分配器被映射为这四种方法的其中之一，根据当前的优化级别（-O选项）作出选择。
+
+虽然寄存器分配器在一个单一的Pass中实现，不管选择何种算法，但是它仍然依赖其它的分析，这构成了分配器框架。分配器框架用到一些Pass，这里我们介绍寄存器合并器和寄存器重写，解释它们的概念。下图阐明了这些Pass如何相互交互。
+
+（图）
+
+寄存器合并器
+========================================
+
+寄存器合并器（coalescer）通过结合值区间（interval）去除冗余的复制指令（COPY）。RegisterCoalescer class实现了这种合并（见lib/CodeGen/RegisterCoalescer.cpp），它是一个机器函数Pass。机器函数Pass类似于IR Pass，它运行在每个函数之上，只是处理的不是IR指令，而是MachineInstr指令。在合并期间，方法joinAllIntervals()复制指令的列表。方法joinCopy()从机器复制指令创建CoalescerPair实例，并且在可能的时候合并掉复制指令。
+
+值区间（interval）表示程序中的一对点，开始和结束，它从一个值被产生时开始，直到这个值最终被使用，也就是说，被消灭（killed），期间它被保存在临时位置上。让我们看看合并器运行在我们的sum.bc bitcode例子上时会发生什么。
+
+我们利用llc中的regalloc调试选项来查看合并器的调试输出：
+
+.. code-block:: bash
+
+    $ llc -march=sparc -debug-only=regalloc sum.bc 2>&1 | head -n30
+    Computing live-in reg-units in ABI blocks.
+    0B BB#0 I0#0 I1#0
+    ********* INTERVALS **********
+    I0 [0B,32r:0) [112r,128r:1) 0@0B-phi 1@112r
+    I1 [0B,16r:0) 0@0B-phi
+    %vreg0 [32r,48r:0) 0@32r
+    %vreg1 [16r,96r:0) 0@16r
+    %vreg2 [80r,96r:0) 0@80r
+    %vreg3 [96r,112r:0) 0@96r
+    RegMasks:
+    ********** MACHINEINSTRS **********
+    # Machine code for function sum: Post SSA
+    Frame Objects:
+    fi#0: size=4, align=4, at location[SP]
+    fi#1: size=4, align=4, at location[SP]
+    Function Live Ins: $I0 in $vreg0, $I1 in %vreg1
+    
+    0B BB#0: derived from LLVM BB %entry
+    Live Ins: %I0 %I1
+    16B %vreg1<def> = COPY %I1<kill>; IntRegs:%vreg1
+    32B %vreg0<def> = COPY %I0<kill>; IntRegs:%vreg0
+    48B STri <fi#0>, 0, %vreg0<kill>; mem:ST4[%a.addr]
+    IntRegs:%vreg0
+    64B STri <fi#1>, 0, %vreg1; mem:ST4[%b.addr] IntRegs:$vreg1
+    80B %vreg2<def> = LDri <fi#0>, 0; mem:LD4[%a.addr]
+    IntRegs:%vreg2
+    96B %vreg3<def> = ADDrr %vreg2<kill>, %vreg1<kill>;
+    IntRegs:%vreg3,%vreg2,%vreg1
+    112B %I0<def> = COPY %vreg3<kill>; IntRegs:%vreg3
+    128B RETL 8, %I0<imp-use,kill>
+    
+    # End machine code for function sum.
+
+.. note ::
+
+    你可以用-debug-only选项对一个特定的LLVM pass或者组件开启内部调试消息。为了找出调试的组件，可在LLVM源代码文件夹中运行grep -r "DEBUG_TYPE" *。DEBUG_TYPE定义标记选项，它激活当前文件的调试消息，例如在寄存器分配的实现文件中有#define DEBUG_TYPE "regalloc"。
+
+注意，我们用2>&1重定向了打印调试信息的标准错误输出到标准输出。然后，管道标准输出（包含调试信息）到head -n30，只打印前面的30行。以这种方式，我们控制了显示在终端上的信息量，因为调试信息可能相当繁琐。
+
+首先让我们来看\*\* MACHINEINSTRS \*\*输出。这打印了作为寄存器合并器输入的所有机器指令——如果你用-print-machine-insts=phi-node-elimination选项输出（运行于合并器之前的）phi节点消除pass之后的机器指令，将得到相同的内容。然而，合并器调试器的输出，用索引信息给每条机器指令作提示：0B, 16B, 32B等。我们需要它们以正确地解释值区间（interval）。
+
+这些索引也被称为slot indexes，给每个活跃区域（live range）赋予一个不同的数字。字母B对应基本块（block），被用于活跃区域进入或者离开一个基本块的边界。在此例中，我们的指令打印为索引跟着B，因为这是默认单元（slot）。在值区间中，有一个不同的单元，字母r，它表示寄存器，用于指示普通寄存器的使用或者定义。
+
+通过阅读机器指令序列，我们已经知道了寄存器分配器超级Pass（若干小Pass的组合）的重要内容：%vreg0, %vreg1, %vreg2, %vreg3都是虚拟寄存器，需要为它们分配物理寄存器。因此，最多要使用4个物理寄存器，除了%I0和%I1之外，它们已经在使用了。其原因是为了遵守ABI调用惯例，它要求函数参数存于这些寄存器中。由于活跃变量分析Pass在寄存器合并之前运行，代码也标注了活跃变量信息，展示了每个寄存器在何处被定义和杀死，这让我们能够看清楚哪些寄存器相互冲突，即哪些寄存器同时活跃，需要保持在不同的物理寄存器中。
+
+另一方面，合并器不依赖寄存器分配器的结果，它只是寻找寄存器复制。对于寄存器到寄存器的复制，合并器会尝试结合源寄存器和目标寄存器的值区间，让它们保持在相同的物理寄存器中，消除复制指令，就像索引16和32的复制。
+
+紧跟着\*\*\* INTERVALS \*\*\*的消息，来自寄存器合并所依赖的另一个分析：活跃值区间分析（不同于活跃变量分析），它由 lib/CodeGen/LiveIntervalAnalysis.cpp实现。合并器需要知道每个虚拟寄存器所活跃的值区间，这样才能发现哪些值区间可以合并。例如，我们可以从输出中看到，虚拟寄存器%vreg0的值区间被确定为[32r:48r:0)。
+
+这意味着这个半开放的值区间%vreg0在32处被定义，在48处被杀死。48r后面的数字0是一个代码，它显示这个值区间在何处被第一次定义，这个意思恰好在值区间后面被打印出来：o:32r。这样，定义o出现在索引32，这是我们已经知道的。然而，这可以让我们有效地追踪原始定义，监控值区间是否分裂。最后，RegMasks显示了调用现场，它清理了很多寄存器，是冲突的一个大源头。因为这个函数中没有任何调用，所以没有RegMasks位置。
+
+通过观察值区间，我们有喜人的发现：%I0寄存器的值区间是[0B, 32r:0)，%vreg0寄存器的值区间是[32r, 48r:0)，在32处，有一条复制指令，它复制%I0到%vreg0。这就是合并发生的前提：结合值区间[0B, 32r:0)和[32r, 48r:0)，赋给%I0和%vreg0相同的寄存器。
+
+下面，让我们打印其余的调试输出，看看发生了什么：
+
+.. code-block:: bash
+
+    $ llc -match=sparc -debug-only=regalloc sum.bc
+    ...
+    entry:
+    16B %vreg1<def> = COPY %I1;
+    IntRegs: %vreg1
+        Considering merging %vreg1 with %I1
+        Can only merge into reserved registers.
+    32B %vreg0<def> = COPY %I0;
+    IntRegs:%vreg0
+        Considering merging %vreg0 with %I0
+        Can only merge into reserved registers.
+    64B %I0<def> = COPY %vreg2;
+    IntRegs:%vreg2
+        Considering merging %vreg2 with %I0
+        Can only merge into reserved registers.
+    ...
+
+我们看到，合并器考虑结合%vreg0和%I0，如我们希望的那样。然而，当寄存器是物理寄存器时，例如%I0，它实行了特殊的规则。物理寄存器必须保留以连接它的值区间。这意味着，不能将物理寄存器分配给其它的活跃区域，而%I0的情况并非如此。因此，合并器放弃了这个机会，它担心过早地把%I0分配给这整个区间到最后可能无法获益，留由寄存器分配器作这个决定。
+
+因此，程序sum.bc没有合并的机会。虽然它试图结合虚拟寄存器和函数参数寄存器，但是失败了，因为在此阶段它只能将虚拟寄存器和保留的——非常规可分配的——物理寄存器相结合。
+
+虚拟寄存器重写
+=================================
+
+寄存器分配Pass为每个虚拟寄存器选择物理寄存器。随后，VirtRegMap保存了寄存器分配的结果，它将虚拟寄存器映射到物理寄存器。接着，虚拟寄存器重写Pass——由VirtRegRewriter class表示，它的实现在文件<llvm_source>/lib/CodeGen/VirtRegMap.cpp 中——利用VirtRegMap将虚拟寄存器替换为物理寄存器。根据情况会生成spill代码。而且，剩下的恒等复制reg = COPY reg会被删除。例如，让我们利用-debug-only=regalloc选项分析分配器和重写器如何处理sum.bc。首先，greedy分配器输出如下文本：
+
+.. code-block:: bash
+
+    ...
+    assigning %vreg1 to %I1: I1
+    ...
+    assigning %vreg0 to %I0: I0
+    ...
+    assigning %vreg2 to %I0: I0
+
+虚拟寄存器1, 0, 2分别被分配以物理寄存器%I1, %I0, %I0。VirtRegMap输出中给出了相同的内容，如下：
+
+.. code-block:: bash
+
+    [%vreg0 -> %I0] IntRegs
+    [%vreg1 -> %I1] IntRegs
+    [%vreg2 -> %I0] IntRegs
+
+然后，重写器将所有虚拟寄存器替换为物理寄存器，并删除恒等的复制：
+
+.. code-block:: bash
+
+    > %I1<def> = COPY %I1
+    Deleting identity copy.
+    > %I0<def> = COPY %I0
+    Deleting identity copy.
+    ...
+
+我们看到，尽管合并器无法去除这些复制，但是寄存器分配器能够为两个活跃区域赋以相同的寄存器，并删除复制操作，如我们希望的那样。最终，作为结果的sum函数的机器指令极大地简化了：
+
+.. code-block:: bash
+
+    0B BB#0: derived from LLVM BB
+    %entry
+    Live Ins: %I0 %I1
+    48B %I0<def> = ADDrr %I1<kill>, %I0<kill>
+    80B RETL 8, %I0<imp-use>
+
+注意，复制指令被删除了，没有剩下虚拟寄存器。
+
+.. note ::
+
+    只有当LLVM以debug模式编译（通过在配置时刻设置--disable-optimized）后，才能使用llc程序的选项-debug或者-debug-only=<name>。你可以在第1章（编译和安装LLVM）的Building and installing LLVM小节找到更多相关内容。
+
+在任何编译器中，寄存器分配和指令调度都是天生的敌人。寄存器分配的任务是尽可能让活跃区域短一点，减少冲突图的边的数目，而减少所需寄存器的数目，以避免挤出（spill）。因而，寄存器分配器喜欢以串行的模式排列指令（让指令紧跟在其所依赖指令的后面），因为用这种方法代码所用的寄存器相对较少。指令调度的任务是相反的：为了提升指令级别的并行，需要尽可能地让很多无关而并行的运算保持活跃，要用很多寄存器保存中间值，增加活跃区域之间冲突的数量。设计一个有效的算法来协同地处理指令调度和寄存器分配，是一个开放的研究课题。
+
+目标钩子
+===============================
+
+在合并的时候，虚拟寄存器来自相容的寄存器类别，需要被顺利地合并。代码生成器从目标特定的描述获得这类信息，而描述由抽象方法给出。分配器可以从TargetRegisterInfo的子类（例如X86GenRegisterInfo）获得所有关于一个寄存器的信息。这些信息包括，是否为保留的，父寄存器类别，是物理的还是虚拟的寄存器。
+
+<Target>InstrInfo类是另一个提供寄存器分配器所需要的目标特定的信息的数据结构。这里讨论一些例子：
+
+•	<Target>InstrInfo的isLoadFromStackSlot()和isStoreToStackSlot()方法，用于在挤出代码生成期间发现机器指令访问栈单元的内存。
+•	此外，它用storeRegToStackSlot()和loadRegFromStackSlot()方法生成访问栈单元的目标特定的内存访问指令。
+•	COPY指令可能在寄存器重写之后保留下来，因为它们没有被合并掉，而且不是同一的复制。在这种情况下，copyPhysReg()方法用于生成目标特定的寄存器复制，在需要时甚至在不同寄存器类别之间。SparcInstrInfo::copyPhysReg()的例子是这样的：
+
+.. code-block :: cpp
+
+    if (SP::IntRegsRegClass.contains(DestReg, SrcReg))
+      BuildMI(MBB, I, DL, get(SP::ORrr), DestReg).addReg(SP::G0)
+        .addReg(SrcReg, getKillRegState(KillSrc));
+    ...
+
+BuildMI()方法在代码生成器中到处可见，它用于生成机器指令。在这个例子中，SP::ORrr指令用于复制一个CPU寄存器到另一个CPU寄存器。
+
+序曲和尾声
+************************************
+
+完整的函数都需要序曲（prologue）和尾声（epilogue）。前者在函数的开始处设置堆栈帧和被调用者保存的寄存器，而后者在函数返回前清理堆栈帧。在例子sum.bc中，当为SPARC编译时，插入序曲和尾声之后，机器指令看起来是这样的：
+
+.. code-block:: bash
+
+    %06<def> = SAVEri %06, -96
+    %I0<def> = ADDrr %I1<kill>, %I0<kill>
+    %G0<def> = RESTORErr %G0, %G0
+    RETL 8, %I0<imp-use>
+
+此例中，SAVEri指令是序曲，RESTORErr是尾声，执行堆栈帧相关的设置和清理。序曲和尾声的生成是目标特定的，由方法<Target>FrameLowering::emitPrologue()和<Target>FrameLowering::emitEpilogue()定义（参见文件<llvm_source>/lib/Target/<Target>/<Target>FrameLowering.cpp）。
+
+帧索引
+====================================
+
+LLVM在代码生成期间用到一个虚拟堆栈帧，利用帧索引引用堆栈元素。序曲的插入会分配堆栈帧，给出充足的目标特定的信息，让代码生成器得以将虚拟帧索引替换为实际的（目标特定）堆栈引用。
+
+<Target>RegisterInfo类的eliminateFrameIndex()方法实现了所述替换，就是检查所有包含堆栈引用（通常为load和store）的机器指令，将每个帧索引转换为实际的堆栈偏移。当需要额外的堆栈偏移算术运算时，也会生成额外的指令。参见文件<llvm_source>/lib/Target/<Target>/<Target>RegisterInfo.cpp作为例子。
+
+理解机器代码框架
+************************************
+
+机器代码（简称MC）类包含整个低层操作函数和指令的框架。对比其它的后端组件，这是一个新设计的框架，助于创建基于LLVM的汇编器和反汇编器。之前，LLVM缺少一个集成的汇编器，编译过程只能进行到汇编语言生成这一步，它创建一个汇编文本文件，要依靠外部的工具继续剩余的编译工作（汇编器和链接器）。
+
+MC指令
+====================================
+
+在MC框架中，机器代码指令（MCInst）替代了机器指令（MachineInstr）。在文件<llvm_source>/include/llvm/MC/MCInst.h中定义的MCInst类，定义了对指令的轻量表示。对比MI（机器指令），MCInst记录较少的程序信息。例如，MCInst实例不仅可以由后端创建，而且可以由反汇编器只根据二进制代码创建，注意反汇编器是一个缺少指令上下文信息的环境。事实上，它融入了汇编器的理念，也就是说，其目的不是应用丰富的优化，而是组织指令生成目标文件。
+
+每个操作数可以是一个寄存器，立即数（整数或浮点数），表达式（表示为MCExpr），或者另一个MCInstr实例。表达式用于表示标记（label）运算和重定位。MI指令在代码生成阶段的早期被转换为MCInst实例，这是下个小节的主题。
+
+代码输出
+====================================
+
+代码输出阶段处于所有后寄存器分配Pass之后。尽管名字似乎让人难于理解，代码生成从汇编打印（AsmPrinter）开始。下面的示意图给出了从MI指令到MCInst接着到汇编或者二进制指令的步骤：
+
+（图）
+
+让我们逐一介绍上图所示的步骤：
+
+1.	AsmPrinter是一个机器函数Pass，它首先生成函数头，然后遍历所有基本块，每次发送一个MI指令到方法EmitInstruction()，以作进一步处理。每个目标会提供一个AsmPrinter子类，它重载这个方法。
+2.	<Target>AsmPrinter::EmitInstruction()方法接收MI指令作为输入，凭借MCInstLowering接口将它转变为MCInst实例——每个目标会提供这个接口的子类，自定义生成这些MCInst实例的程序。
+3.	此刻，可以接着生成汇编或者二进制指令。MCStreamer类处理MCInst指令流，通过两个子类，MCAsmStreamer和MCObjectStreamer，将指令输出为所选的格式。前者将MCInst转换为汇编语言，而后者将它转换为二进制指令。
+4.	如果生成汇编指令，就会调用MCAsmStreamer::EmitInstruction()，由一个目标特定的MCInstPrinter子类打印汇编指令到文件。
+5.	如果生成二进制指令，MCObjectStreamer::EmitInstruction()的一个目标（target）专用的、目标代码（object）特定的版本就会调用LLVM目标代码汇编器。
+6.	汇编器会利用一个专用的MCCodeEmitter::EncodeInstruction()方法，蜕变MCInst实例，编码和输出二进制指令数据块到文件，以一种目标特定的方式。
+
+此外，你可以用llc工具输出MCInst片段。例如，要将MCInst编码为汇编注释，可以用下面的命令：
+
+.. code-block:: bash
+
+    $ llc sum.bc -march=x86-64 -show-mc-inst -o -
+    ...
+    pushq %rbp        ## <MCInst #2114 PUSH64r
+                    ## <MCOperand Reg: 107>>
+...
+
+然而，如果你想要将每条指令的二进制编码显示为汇编注释，就用下面的命令：
+
+.. code-block:: bash
+
+    $ llc sum.bc -march=x86-64 -show-mc-encoding -o -
+    ...
+    push %rbp         ## encoding: [0x55]
+    ...
+
+llvm-mc工具还让你能够测试和使用MC框架。例如，为了查明一条特定指令的汇编编码，使用选项--show-encoding。下面是x86指令的一个例子：
+
+.. code-block:: bash
+
+    $ echo "movq 48879(,%riz), %rax" | llvm-mc -triple=x86_64 --show-encoding
+        #encoding:
+    [0x48, 0x8b, 0x04, 0x25, 0xef, 0xbe, 0x00, 0x00]
+
+这个工具还提供了反汇编的功能，如下：
+
+.. code-block:: bash
+
+    $ echo "0x8d 0x4c 0x24 0x04" | llvm-mc --disassemble -triple=x86_64
+        leal 4(%rsp), %ecx
+
+另外，选项--show-inst为经过汇编或反汇编的指令显示MCInst指令：
+
+.. code-block:: bash
+
+    $ echo "0x8d 0x4c 0x24 0x04" | llvm-mc --disassemble --show-inst -triple=x86_64
+        leal 4(%rsp), %ecx    # <MCInst #1105 LEA64_32r
+                               # <MCOperand Reg:46>
+                               # <MCOperand Reg:115>
+                               # <MCOperand Imm:1>
+                               # <MCOperand Reg:0>
+                               # <MCOperand Imm:4>
+                               # <MCOperand Reg:0>>
+
+MC框架让LLVM能够为经典的目标文件阅读器提供可选择的工具。例如，目前默认编译LLVM会安装llvm-objdump和llvm-readobj工具。两者都用到了MC反汇编库，实现了跟GNU Binutils软件包中的等价物（objdump和readelf）相类似的功能。
+
+编写你自己的机器Pass
+*********************************
+
+在这个章节，我们将示范如何编写一个定制的机器Pass，它正好在代码生成之前，统计每个函数有多少机器指令。不同于IR Pass，你不能用opt工具运行这个Pass，或通过命令行加载并安排它运行。机器Pass由后端代码管理。因此，在实践中我们修改一个已有的后端来运行并观察我们定制的Pass。我们选择SPARC后端。
+
+回想第3章（工具和设计）的演示插件式Pass接口小节，从这章的第一张图的白框中，有很多选项供我们选择决定在何处运行我们的Pass。为了应用这些方法，我们应该找到我们的后端实现的TargetPassConfig子类。如果你用grep，就会在SparcTargetMachine.cpp中找到它：
+
+.. code-block:: bash
+
+    $ cd <llvmsource>/lib/Target/Sparc
+    $ vim SparcTargetMachine.cpp  # 使用你喜欢的编辑器
+
+观察这个从TargetPassConfig派生的SparcPassConfig类，我们看到它覆写（override）了addInstSelector()和addPreEmitPass()，但是我们可以覆写很多方法，如果我们想要在其它的地方添加一个Pass（见链接http://llvm.org/doxygen/html/classllvm_1_1TargetPassConfig.html）。我们将在代码生成前运行我们的Pass，因此在addPreEmitPass()中添加代码：
+
+.. code-block :: cpp
+
+    bool SparcPassConfig::addPreEmitPass() {
+      addPass(createSparcDelaySlotFillerPass(
+        getSparcTargetMachine()));
+      addPass(createMyCustomMachinePass());
+    }
+
+在上面的代码中，高亮的行是我们额外添加的，它通过调用函数createMyCustomMachinePass()来添加我们的Pass。然而，这个函数还未定义。我们将增加一个新的源代码文件，编写Pass代码，也会定义这个函数。于是，创建一个文件，名为MachineCountPass.cpp，填写下面的内容：
+
+.. code-block :: cpp
+
+    #define DEBUG_TYPE "machinecount"
+    #include "Sparc.h"
+    #include "llvm/Pass.h"
+    #include "llvm/CodeGen/MachineBasicBlock.h"
+    #include "llvm/CodeGen/MachineFunction.h"
+    #include "llvm/CodeGen/MachineFunctionPass.h"
+    #include "llvm/Support/raw_ostream.h"
+    
+    using namespace llvm;
+    
+    namespace {
+      class MachineCountPass : public MachineFunctionPass {
+      public:
+        static char ID;
+        MachineCountPass() : MachineFunctionPass(ID) {}
+    
+        virtual bool runOnMachineFunction(MachineFunction &MF) {
+          unsigned num_instr = 0;
+          for (MachineFunction::const_iterator I = MF.begin(), E = MF.end(); I != E; ++I) {
+            for (MachineBasicBlock::const_iterator BBI = I->begin(), BBE = I->end(); BBI != BBE; ++BBI) {
+              ++num_instr;
+            }
+          }
+          errs() << "mcount --- " << MF.getName() << " has " << num_instr << " instructions.\n";
+          return false;
+        }
+      };
+    }
+    
+    FunctionPass *llvm::createMyCustomMachinePass() {
+      return new MachineCountPass();
+    }
+    
+    char MachineCountPass::ID = 0;
+    static RegisterPass<MachineCountPass> X("machinecount", "Machine Count Pass");
+
+在第一行中，我们定义了宏DEBUG_TYPE，这样以后我们就可以通过选项-debug-only=machinecount调试这个Pass。然而，在这个例子中，没有用到调试输出。剩余的代码和我们前一章为IR Pass写的很相似。不同之处如下：
+
 * 在包含文件中，我们包含了头文件MachineBasicBlock.h, MachineFunction.h, MachineFunctionPass.h，它们定义了我们用于提取MachineFunction信息的类，让我们能够计数它包含的机器指令。我们还包含了头文件Sparc.h，因为我们将声明createMyCustomMachinePass()。
 * 我们创建了一个类，从MachineFunctionPass派生，而不是从FunctionPass。
 * 我们覆写了runOnMachineFunction()方法，而不是runOnFunction()。另外，方法的实现是相当不同的。我们遍历了当前MachineFunction中的所有MachineBasicBlock实例。然后，对于每个MachineBasicBlock，调用begin()/end()语句以计数所有的机器指令。
 * 我们定义了函数createMyCustomMachinePass()，让这个Pass在我们所修改的SPARC后端文件中被创建和添加为代码生成之前的Pass。
-　　
-　　既然已经定义了函数createMyCustomMachinePass()，我们就必须在头文件中声明它。让我们编辑Sparc.h文件来做这件事。在createSparcDelaySlotFillerPass()的后面添加我们的函数声明：
 
-FunctionPass *createSparcISelDag(SparcTargetMachine &TM);
-FunctionPass *createSparcDelaySlotFillerPass(TargetMachine &TM);
-FunctionPass *createMyCustomMachinePass();
+既然已经定义了函数createMyCustomMachinePass()，我们就必须在头文件中声明它。让我们编辑Sparc.h文件来做这件事。在createSparcDelaySlotFillerPass()的后面添加我们的函数声明：
 
-　　下面让我们用LLVM编译系统编译新的SPARC后端。如果你还没有配置你的LLVM编译系统，就参考第1章，编译和安装LLVM。如果你已经有了配置项目的build文件夹，就进入这个文件夹，运行make以编译新的后端。接着，你可以安装包含修改了的SPARC后端的新的LLVM，或者依你所愿，只是从你的build文件夹运行新的llc二进制程序，而不运行make install：
-　　$ cd <llvm-build>
-　　$ make
-　　$ Debug+Asserts/bin/llc -march=sparc sum.bc
-　　mcount --- sum has 8 instructions.
-　　
-　　如果我们想知道我们的Pass在Pass管线中被插入在什么位置，输入下面的命令：
-　　$ Debug+Asserts/lib/llc -march=sparc sum.bc -debug-pass=Structure
-　　(...)
-　　Branch Probability Basic Block Placement
-　　SPARC Delay Slot Filler
-　　Machine Count Pass
-　　MachineDominator Tree Construction
-　　Sparc Assembly Printer
-　　mcount --- sum has 8 instructions.
-　　
-　　我们看到，我们的Pass恰好被安排在SPARC Delay Slot Filler之后，在Sparc Assembly Printer之前，后者是代码生成发生的地方。
-总结
-　　在这一章中，我们概要地介绍了LLVM后端是如何工作的。我们了解了不同的代码生成阶段，和内部的指令表示，它们在编译过程中演变。我们讨论了指令选择、调度、寄存器分配、代码生成，为读者给出了用LLVM工具对这些阶段做实验的方法。在本章结束的时候，你应该能够读懂llc -debug的输出，它打印出后端活动的详细的日志，给出了发生在后端内部的一切事情的全貌。如果你有兴趣编写自己的后端，你的下一步就是参考官方的教程：http://llvm.org/docs/WritingAnLLVMBackend.html。如果你有兴趣阅读更多的关于后端设计的内容，你应该参考http://llvm.org/docs/CodeGenerator.html。
-　　在下一章中，我们将介绍LLVM Just-in-Time编译框架，它让你能够按需要随时地生成代码。
+.. code-block :: cpp
 
-第7章 Just-in-Time编译器
-########################
+    FunctionPass *createSparcISelDag(SparcTargetMachine &TM);
+    FunctionPass *createSparcDelaySlotFillerPass(TargetMachine &TM);
+    FunctionPass *createMyCustomMachinePass();
 
-　　LLVM Just-in-Time (JIT)编译器是一个基于函数的动态翻译引擎。为了理解什么是JIT编译器，让我们回顾原始的术语。这个术语来自Just-in-Time制造，一种商业策略，即工厂按需制造或者购买物资，而不引入库存。在编译过程中，这个比喻很合适，因为JIT编译器不会将二进制程序存储到磁盘（库存），而是在你需要它们的时候开始编译程序部分。尽管人们接受了业内行话，你可能还困惑于其它的名字，例如延时（late）或者懒惰（lazy）编译。
-　　JIT策略的优势在于知道将运行程序的精确的机器和微架构。这让JIT系统能够为特定的处理器微调代码。而且，有的编译器只有在运行时知道其输入，因而只能实现为JIT系统，除此之外别无选项。例如，GPU驱动程序即时编译着色语言，互联网浏览器处理JavaScript也是如此。在这一章中，我们将探索LLVM JIT系统，讨论下列内容：
-* llvm::JIT类和它的基础结构
-* 如何利用llvm::JIT类执行JIT编译
-* 如何利用GenericValue简化函数调用
-* llvm::MCJIT类和它的基础结构
-* 如何利用llvm::MCJIT类执行JIT编译
-了解LLVM JIT引擎
-基础
-　　LLVM JIT编译器是基于函数的，因为它一次能够编译单个函数。这定义了编译器的工作粒度，对于JIT系统来说是一个重要的决定。通过按需编译函数，编译器只会处理当前程序调用中实际用到的函数。例如，你的程序有若干个函数，你在启动它的时候设置了错误的命令行参数，一个基于函数的JIT系统只会编译那个打印帮助消息的函数，而不是这个程序。
-　　Note
-　　理论上，我们可以进一步细化粒度，只编译执行踪迹（trace），就是函数的具体的线路。如此，我们已经利用了JIT系统的重要优势：对于给定输入的一次程序调用，知道应该尽力去编译哪个程序线路，而不是其它的。然而，LLVM JIT系统并不支持基于踪迹的编译，一般来说，它更受研究者的关注。关于JIT编译的讨论没有尽头，大量不同的权衡值得仔细研究，指出哪种策略最优不是一件简单的事。目前，计算机科学社区积累了大约20年的对JIT编译的研究，这个领域仍然非常活跃，每年都有新的论文尝试解决这个开放的问题。
-　　JIT引擎在运行时编译并且执行LLVM IR函数。在编译阶段，JIT引擎会用LLVM代码生成器生成由目标特定的二进制指令组成的二进制数据块。它返回一个指向所编译函数的指针，这个函数可以被执行。
-　　Tip
-　　一篇有趣的博客文章对比了JIT编译的开源解决方案，见https://eli.thegreenplace.net/2014/01/15/some-thoughts-on-llvm-vs-libjit，它分析了LLVM和libjit，后者是一个小型的致力于JIT编译的开源项目。LLVM作为静态编译器比JIT系统更加有名，因为在JIT编译过程中，每个Pass消耗的时间是很重要的，算作程序执行的开销。LLVM基础架构更注重支持慢而强的优化，和GCC相似，而不是快而弱的优化，后者对构建一个有竞争力的JIT系统很重要。尽管如此，LLVM已经被成功地应用于JIT系统来建立Webkit JavaScript引擎的第四级LLVM（Fourth Tier LLVM, FTL）组件（http://blog.llvm.org/2014/07/ftl-webkits-llvm-based-jit.html）。因为第四级只用在长时间运行的JavaScript应用程序，激进的LLVM优化可以发挥作用，即使它们不如更低级的优化快。从理性来看，如果应用程序运行时间长，我们就可以在代价高的优化上付出更多时间。想要了解更多关于这种权衡，参看Modeling Virtual Machines Misprediction Overhead，作者Cesar et al.，发表于IISWC 2013，它分析揭示了JIT系统在多大程度上因为对不值得的代码使用了高代价的代码生成而受损失。当你的JIT系统浪费大量时间去优化一个仅执行若干次的程序片段时，这种情况就发生了。
-介绍执行引擎
-　　LLVM JIT系统采用了一个执行引擎来支持LLVM模块的执行。ExecutionEngine类在<llvm_source>/include/llvm/ExecutionEngine/ExecutionEngine.h中定义，它被设计出来以支持执行，通过JIT系统或者解释器（参考后面的信息盒子）。一般来说，一个执行引擎负责管理整个宾客程序的执行，分析接下来需要运行的程序片段，采取合理的动作来执行它。要作JIT编译，必须有一个执行管理器来协调编译决策，运行宾客程序（一次一个片段）。就LLVM的ExecutionEngine类而言，它将执行部分抛回给你，即客户。它可以运行编译管线，产生驻留内存的代码，但是由你决定是否执行此代码。
-　　除了接受LLVM模块并执行它，引擎支持下面几个场景：
-* 懒惰（lazy）编译：函数被调用时，引擎才编译它。关闭懒惰编译后，一旦你请求指向函数的指针，引擎就编译它们。
-* 编译外部全局变量：这包括对当前LLVM模块的外部实体的符号解析和内存分配。
-* 通过dlsym查找和解析外部符号：这个过程和运行时动态共享对象（dynamic shared object, DSO）加载一样。
-　　LLVM实现了两个执行引擎：llvm::JIT类和llvm::MCJIT类。ExecutionEngine::EngineBuilder()方法实例化一个ExecutionEngine对象，根据一个IR模块参数。接着，ExecutionEngine::create()方法创建一个JIT或者MCJIT实例，两者的实现截然不同，这正是这一章要讲清楚的内容。
-　　Note
-　　解释器实现了一种非传统的策略来执行宾客代码，就是硬件平台（宿主平台）不原生地支持此代码。例如，LLVM IR是x86平台上的宾客代码，因为x86处理器不能之间执行LLVM IR。不同于JIT编译器，解释器的任务是读取每条指令，解码它们并执行它们的行为，在软件中模仿物理处理器的功能。尽管解释器省去了启动编译器翻译宾客代码的时间，它们往往慢得多，除非编译宾客代码所需的时间不能抵消解释代码的高额开销。
-内存管理
-　　一般来说，JIT引擎在运行时将二进制数据块写入内存，这是由ExecutionManager类完成的。随后，就可以跳转到分配的内存区域来执行这些指令了，也就是调用ExecutionManager返回给你的函数指针。在此上下文中，内存管理是极其重要的，处理很多常规的任务，例如分配内存，释放内存，为加载库提供空间，和内存权限管理。
-　　JIT和MCJIT类都实现了一个定制的内存管理类，从基类RTDyldMemoryManager派生而来。任何ExecutionEngine用户可能也提供定制的RTDyldMemoryManager派生类，来指定不同的JIT组件应该被放置在内存的何处。你可以在<llvm_source>/include/llvm/ExecutionEngine/RTDyldMemoryManager.h文件中找这个接口。
-　　例如，RTDyldMemoryManager类声明了如下方法：
-* allocateCodeSection()和allocateDataSection()：这些方法分配内存以存放给定大小和对齐的可执行代码和数据。内存管理的用户可以通过一个内部的section标识符追踪已分配的section。
-* getSymbolAddress()：这个方法返回当前链接的库中可获得的symbol的地址。注意这不是用于获得JIT编译生成的symbol。调用这个方法时，必须提供一个std::string实例以存放symbol的名字。
-* finalizeMemory()：这个方法应该在对象加载完成时被调用，然后终于可以设置内存权限了。举例来说，不能在调用这个方法之前运行生成的代码。正如这一章要进一步解释的那样，这个方法被导向到MCJIT用户而不是JIT用户。
-　　尽管用户可以提供定制的内存管理实现，JITMemoryManager和SectionMemoryManager分别是JIT和MCJIT的默认子类。
+下面让我们用LLVM编译系统编译新的SPARC后端。如果你还没有配置你的LLVM编译系统，就参考第1章，编译和安装LLVM。如果你已经有了配置项目的build文件夹，就进入这个文件夹，运行make以编译新的后端。接着，你可以安装包含修改了的SPARC后端的新的LLVM，或者依你所愿，只是从你的build文件夹运行新的llc二进制程序，而不运行make install：
 
-介绍llvm::JIT基础结构
-　　JIT类和它的框架代表原先的引擎，它是通过使用LLVM代码生成器的不同部分而实现的。LLVM 3.5之后，它将被移除。尽管这个引擎大部分是目标无关的，每个目标必须为它的具体的指令实现二进制指令输出。
-数据块写到内存
-　　JIT类通过JITCodeEmitter输出二进制指令，它是MachineCodeEmitter类的子类。MachineCodeEmitter类用于机器代码输出，它和新的机器代码（Machine Code, MC）框架是没有联系的——尽管陈旧，它依然存在以支持JIT类的功能。它的局限是只支持若干个目标，对于已经支持的目标，不是所有目标特性都是可用的。
-　　MachineCodeEmitter类的方法使下列任务变得容易：
-* 为当前将输出的函数分配空间
-* 将二进制数据块写到内存缓冲区（emitByte(), emitWordLE(), emitWordBE(), emitAlignment(), 等）
-* 追踪当前缓冲区地址（就是一个指针，指向下一条指令将被在何处输出的地址）
-* 添加重定位，与此缓冲区内的指令地址相关联
-　　将字节写到内存的任务是由JITCodeEmitter执行的，它是参与代码输出过程的另一个类。它是JITCodeEmitter的子类，实现具体的JIT功能和管理。JITCodeEmitter是相当简单的，只是将字节写到缓冲区，而JITEmitter具有下列改进：
-* 专用的内存管理器，JITMemoryManager，之前提到过（也是下一节的主题）。
-* 解决者（JITResolver）实例，跟踪和解决未被编译的函数的调用现场。这对懒惰函数编译是至关重要的。
-使用JITMemoryManager
-　　JITMemoryManager类（见<llvm_source>/include/llvm/ExecutionEngine/JITMemoryManager.h）实现了低层级内存处理，为前面提及的类提供缓冲区。除了来自RTDyldMemoryManager的方法，它提供具体的方法来协助JIT类，例如allocateGlobal()，为单个全局变量分配内存；startFunctionBody()，建立JIT调用，分配内存并标记为读/写可执行，以输出指令。
-　　内部地，JITMemoryManager类使用JITSlabAllocator slab分配器（<llvm_source>/lib/ExecutionEngine/JIT/JITMemoryManager.cpp）和MemoryBlock单元（<llvm_source>/include/llvm/Support/Memory.h）。
-目标代码输出
-　　每个目标都实现一个机器函数Pass，称为<Target>CodeEmitter（见<llvm_source>/lib/Target/<Target>CodeEmitter.cpp），它将指令编码为数据块，利用JITCodeEmitter写到内存。MipsCodeEmitter，以此为例，遍历所有函数基本块，对于每条机器指令（MI），调用emitInstruction()：
-(...)
-MCE.startFunction(MF);
+.. code-block:: bash
 
-for (MachineFunction::iterator MBB = MF.begin(), E = MF.end(); MBB != E; ++MBB) {
-  MCE.StartMachineBasicBlock(MBB);
-  for (MachineBasicBlock::instr_iterator I = MBB->instr_begin(), E = MBB->instr_end(); I != E;)
-　　emitInstruction(*I++, *MBB);
-}
-(...)
+    $ cd <llvm-build>
+    $ make
+    $ Debug+Asserts/bin/llc -march=sparc sum.bc
+    mcount --- sum has 8 instructions.
 
-　　MIPS32是固定4字节长度的ISA，这使得emitInstruction()的实现很简单。
-void MipsCodeEmitter::emitInstruction(MachineBasicBlock::instr_iterator MI, MachineBasicBlock &MBB) {
-  ...
-  MCE.processDebugLoc(MI->getDebugLoc(), true);
+如果我们想知道我们的Pass在Pass管线中被插入在什么位置，输入下面的命令：
 
-  emitWord(getBinaryCodeForInstr(*MI));
-  ++NumEmitted;  // Keep tract of the # of mi's emitted
-  ...
-}
-　　emitWord()方法是对JITCodeEmitter的包装，getBinaryCodeForInstr()是TableGen为每个目标生成的，通过解读.td文件中的指令编码描述。<Target>CodeEmitter类还必须实现定制的方法以编码操作数和其它目标特定的实体。例如，在MIPS中，内存操作数必须使用getMemEncoding()放以恰当地编码（见<llvm_source>/lib/Target/Mips/MipsInstrInfo.td）：
-def mem : Operand<iPTR> {
-  (...)
-  let MIOperandInfo = (ops ptr_rc, simm16);
-  let EncoderMethod = "getMemEncoding";
-  (...)
-}
-　　因此，MipsCodeEmitter必须实现MipsCodeEmitter::getMemEncoding()方法以符合这个TableGen描述。下面的示意图显示了几个代码输出器和JIT框架的关系：
-　　（图）
-目标信息
-　　为了支持Just-in-Time编译，每个目标还必须提供一个TargetJITInfo的子类（见include/llvm/Target/TargetJITInfo.h），例如MipsJITInfo或者X86JITInfo。TargetJITInfo类为通用的JIT功能提供了接口，需要每个目标实现它们。下面，我们来看这些功能的一些例子：
-* 为了支持执行引擎重编译一个函数的需求——或许因为它被修改了——每个目标要实现TargetJITInfo::replaceMachineCodeForFunction()方法，修补原先函数的位置，用指令跳转或调用新版本函数。对于自修改代码，这是必需的。
-* TargetJITInfo::relocate()方法修补当前输出函数中的每个symbol引用，以指向正确的内存地址，这个做法和动态链接器类似。
-* TargetJITInfo::emitFunctionStub()方法输出一个代理：一个函数以调用给定地址的另一个函数。每个目标还要为输出的代理提供定制的TargetJITInfo::StubLayout信息，包括字节长度和对齐。JITEmitter会使用这些代理信息为新的代理在输出它之前分配空间。
-　　虽然TargetJITInfo方法的目的不是输出常规的指令，诸如函数体生成，但是它们仍然需要为代理输出具体的指令，调用新的内存位置。然而，当JIT框架建立之后，没有接口可以依赖以使得输出孤立的指令变得容易，它们存在于MachineBasicBlock之外。这是今天MCInsts为MCJIT做的事情。没有MCInsts，原先的JIT框架强制让目标手工编码指令。
-　　为了揭示<Target>JITInfo的实现如何需要手工地输出指令，让我们来看MipsJITInfo::emitFunctionStub()的代码（见<llvm_source>/lib/Target/Mips/MipsJITInfo.cpp），它用以下代码生成4条指令：
-...
-  // lui $t9, %hi(EmittedAddr)
-  // addiu $t9, $t9, %lo(EmittedAddr)
-  // jalr $t8, $t9
-  // nop
-  if (IsLittleEndian) {
-　　JCE.emitWordLE(0xf << 26 | 25 << 16 | Hi);
-　　JCE.emitWordLE(9 << 26 | 25 << 21 | 25 << 16 | Lo);
-　　JCE.emitWordLE(25 << 21 | 24 << 11 | 9);
-　　JCE.emitWordLE(0);
-...
-学习如何使用JIT类
-　　JIT是一个ExecutionEngine子类，声明于<llvm_source>/lib/ExecutionEngine/JIT/JIT.h。JIT类是编译函数的入口，借助JIT基础结构。
-　　ExecutionEngine::create()方法调用JIT::createJIT()，以一个默认的JITMemoryManager。接着，JIT构造器执行下面的任务：
-* 创建JITEmitter实例
-* 初始化目标信息对象
-* 为代码生成添加Pass
-* 添加最后运行的<Target>CodeEmitter Pass
-　　引擎保存了一个PassManager对象，以调用所有的代码生成和JIT输出Pass，每当被请求JIT编译一个函数的时候。
-　　为了阐明一切是怎么发生的，我们已经描述了如何JIT编译sum.bc的一个函数，第5章（LLVM中间表示）和第6章（后端）到处在用此bitcode文件。我们的目的是获取Sum函数，并且用JIT系统计算两个不同的引用运行时参数的加法运算。让我们执行下面的步骤：
-　　1. 首先，创建一个新文件，名为sum-jit.cpp。我们要包含JIT执行引擎的资源：
-#include "llvm/ExecutionEngine/JIT.h"
-　　2. 包含其它的头文件，涉及读写LLVM bitcode、上下文接口等，并导入LLVM namespace：
-#include "llvm/ADT/OwningPtr.h"
-#include "llvm/Bitcode/ReaderWriter.h"
-#include "llvm/IR/LLVMContext.h"
-#include "llvm/IR/Module.h"
-#include "llvm/Support/FileSystem.h"
-#include "llvm/Support/MemoryBuffer.h"
-#include "llvm/Support/ManagedStatic.h"
-#include "llvm/Support/raw_ostream.h"
-#include "llvm/Support/system_error.h"
-#include "llvm/Support/TargetSelect.h"
+.. code-block:: bash
 
-using namespace llvm;
-　　3. InitializeNativeTarget()方法设置宿主目标，确保能够链接JIT将用到的目标库。和往常一样，每个线程需要一个上下文LLVMContext对象和一个MemoryBuffer对象，以从磁盘读取bitcode文件，如下面的代码所示：
-int main() {
-  InitializeNativeTarget();
-  LLVMContext Context;
-  std::string ErrorMessage;
-  OwningPtr<MemoryBuffer> Buffer;
-　　4. 用getFile()方法从磁盘读文件，如下面的代码所示：
-  if (MemoryBuffer::getFile("./sum.bc", Buffer)) {
-　　errs() << "sum.bc not found\n";
-　　return -1;
-  }
-　　5. ParseBitcodeFile函数从MemoryBuffer读取数据，生成相应的LLVM Module类以表示它，如下面的代码所示：
-  Module *M = ParseBitcodeFile(Buffer.get(), Context, &ErrorMessage);
-  if (!M) {
-　　errs() << ErrorMessage << "\n";
-　　return -1;
-  }
-　　6. 调用EngineBuilder工厂的create方法创建一个ExecutionEngine实例，如下面的代码所示：
-  OwningPtr<ExecutionEngine> EE(EngineBuilder(M).create());
-　　这个方法默认创建一个JIT执行引擎，是JIT的设置点；它直接调用JIT构造器来创建JITEmitter、PassManager，并初始化所有代码生成和目标特定的输出（emission）Pass。此刻，尽管引擎接受了一个LLVM Module，还没有编译函数。
-　　为了编译函数，还需要调用getPointerToFunction()，它得到一个指向原生JIT编译的函数的指针。如果这个函数未曾JIT编译过，就作JIT编译并返回函数指针。下图阐明了此编译过程：
-　　（图）
-　　7. 通过getFunction()方法获取表示sum函数的函数IR对象：
-  Function *SumFn = M->getFunction("sum");
-　　这里，JIT编译被触发了：
-  int (*Sum)(int, int) = (int (*)(int, int)) EE->getPointerToFunction(SumFn);
-　　你需要作一次恰当的类型转换，转换到匹配这个函数的函数指针类型。Sum函数的LLVM定义原型是i32 @sum(i32 %a, i32 %b)，因此我们用int (*)(int, int) C原型。
-　　另一个选项是考虑懒惰编译，调用getPointerToFunctionOrStub()而不是getPointerToFunction()。这个方法将生成一个代理函数，并且返回它的指针，如果目标函数还没有被编译并且懒惰编译是开启的。代理是一个简单的函数，包含一个占位符，将来修改占位符就可以跳转/调用实际的函数。
-　　8. 接下来，根据Sum所指向的JIT编译了的函数，调用原始的Sum函数，如下面的代码所示：
-  int res = Sum(4, 5);
-  outs() << "Sum result: " << res << "\n";
-　　当使用懒惰编译时，Sum调用代理函数，它会用一个编译回调函数来JIT编译实际的函数。然后修改代理以重定向到实际函数并执行它。除非原始的Module中的Sum函数改变了，这个函数绝不会被再次编译。
-　　9. 再次调用Sum来计算下一个结果，如下面的代码所示：
-  res = Sum(res, 6);
-  outs() << "Sum result: " << res << "\n";
-　　在懒惰编译环境中，由于原始的函数在第一次调用Sum时已经编译过了，第二次调用会直接执行原生函数。
-　　10. 我们成功地用JIT编译的Sum函数计算了两次加法。现在，释放执行引擎分配的存放函数代码的内存，调用llvm_shutdown()函数并返回：
-  EE->freeMachineCodeForFunction(SumFn);
-  llvm_shutdown();
-  return 0;
-}
-　　要编译并链接sum-jit.cpp，可以用下面的命令行：
-$ clang++ sum-jit.cpp -g -O3 -rdynamic -fno-rtti $(llvm-config --cppflags --ldflags --libs jit native irreader) -o sum-jit
-　　或者，利用第3章（工具和设计）的Makefile，添加-rdynamic选项，修改llvm-config调用以使用前面的命令行指定的库。尽管这个例子没有使用外部函数，-rdynamic选项是重要的，它保证外部函数在运行时被解析。
-　　运行这个例子并查看输出：
-$ ./sum-jit
-Sum result: 9
-Sum result: 15
-通用值
-　　在前面的例子中，我们将返回的函数指针转换为恰当的原型，为了用C样式的函数调用去调用这个函数。然而，当我们处理多个函数并且它们采用众多的签名和参数类型时，需要一种更灵活的方法去执行它们。
-　　执行引擎提供了另一种调用JIT编译的函数的方法。runFunction()方法编译并运行一个函数，函数参数由GenericValue向量决定——不需要提前调用getPointerToFunction()。
-　　GenericValue struct在<llvm_source>/include/llvm/ExecutionEngine/GenericValue.h中被定义，它能够存放任何通用的类型。让我们修改前面的例子，以使用runFunction()而不是getPointerToFunction()和类型转换。
-　　首先，创建文件sum-jit-gv.cpp以保存这个新的版本，在开头添加GenericValue头文件：
-#include "llvm/ExecutionEngine/GenericValue.h"
+    $ Debug+Asserts/lib/llc -march=sparc sum.bc -debug-pass=Structure
+    (...)
+    Branch Probability Basic Block Placement
+    SPARC Delay Slot Filler
+    Machine Count Pass
+    MachineDominator Tree Construction
+    Sparc Assembly Printer
+    mcount --- sum has 8 instructions.
 
-　　从sum-jit.cpp复制其余的内容，让我们关注修改部分。在SumFn函数指针初始化之后，创建FnArgs——GenericValue向量——并用APInt接口（<llvm_source>/include/llvm/ADT/APInt.h）填充整数值。根据函数原型sum(i32 %a, i32 %b)，填充两个32位长度的整数：
-  (...)
-  Function *SumFn = m->getFunction("sum");
-  std::vector<GenericValue> FnArgs(2);
-  FnArgs[0].IntVal = APInt(32, 4);
-  FnArgs[1].IntVal = APInt(32, 5);
-　　以函数变量和参数向量调用runFunction()。这样，函数会被JIT编译并执行。相应地，结果也是GenericValue，可以被访问。
-  GenericValue Res = EE->runFunction(SumFn, FnArgs);
-  outs() << "Sum result: " << Res.IntVal << "\n";
-　　重复相同的过程，以执行第二个加法：
-  FnArgs[0].IntVal = Res.IntVal;
-  FnArgs[1].IntVal = APInt(32, 6);
-  Res = EE->runFunction(SumFn, FnArgs);
-  outs() << "Sum result: " << Res.IntVal << "\n";
-  (...)
-介绍llvm::MCJIT框架
-　　MCJIT类是LLVM新的JIT实现。它和原先的JIT实现的不同在于MC框架，第6章（后端）对此作过探索。MC提供了统一的指令表达方式，它作为一个框架，为汇编器、反汇编器、汇编打印器和MCJIT所共享。
-　　应用MC库的第一个优势在于，目标只需要指定一次它们的指令的编码，因为所有子系统都会得到此信息。因此，当你编写LLVM后端的时候，如果你实现了目标的目标代码输出功能，也就实现了JIT功能。
-　　llvm::JIT将在LLVM 3.5之后被去除，完全替换为llvm::MCJIT框架。那么，我们为何学习原先的JIT呢？虽然它们是不同的实现，但是ExecutionEngine类是通用的，大部分概念是两者共有的。最重要的是，像在LLVM 3.4版本中，MCJIT的设计不支持某些特性，例如懒惰编译，它还不是原先JIT的完全接替者。
-MCJIT引擎
-　　创建MCJIT引擎的方法和原先的JIT引擎相同，通过调用ExecutionEngine::create()。这个方法调用MCJIT::createJIT()，它会执行MCJIT构造器。MCJIT类在文件<llvm_source>/lib/ExecutionEngine/MCJIT/MCJIT.h中声明。createJIT()方法和MCJIT构造器在文件<llvm_source>/lib/ExecutionEngine/MCJIT/MCJIT.cpp中实现。
-　　MCJIT构造器创建一个SectionMemoryManager实例；将LLVM模块添加到它内部的模块容器，OwningModuleContainer；并且初始化目标信息。
-了解模块的状态
-　　MCJIT类为引擎建立期间插入的初始LLVM模块实例指定状态。这些状态描绘了模块的编译阶段。状态如下：
-* Added: 这些模块所包含的模块集还没有被编译但已经被添加到执行引擎了。这个状态的存在让模块能够为其它模块暴露函数定义，延迟对它们的编译直到必需之时。
-* Loaded: 这些模块处在已JIT编译状态但是还未准备好执行。重定位还没有做，内存页面还需要给予恰当的权限。愿意在内存中重映射已JIT编译的函数的用户，也许能避免重编译，通过使用loaded状态的模块。
-* Finalized: 这些模块包含已经准备好执行的函数。在此状态下，函数不能被重映射了，因为重定位已经做过了。
-　　JIT和MCJIT的一个主要区别就在于模块状态。在MCJIT中，引擎模块必须在请求symbol地址（函数和全局变量）之前就绪（finalized）。
-　　MCJIT::finalizeObject()函数将已添加模块转换为已加载模块，接着转换为已就绪模块。首先，它通过调用generateCodeForModule()生成已加载模块。接着，通过finalizeLoadedModules()方法，所有模块变为就绪模块。
-　　不像原先的JIT，MCJIT::getPointerToFunction()函数要求模块对象在调用之前就绪。因此，必须在使用之前调用MCJIT::finalizeObject()。
-　　LLVM 3.4添加的新方法消除了这种限制——当使用MCJIT时，getPointerToFunction()方法被getFunctionAddress()淘汰了。这个新方法在请求symbol地址之前加载和就绪模块，而不需要调用finalizeObject()。
-　　Note
-　　注意，在原先的JIT中，执行引擎单独地JIT编译和执行各个函数。在MCJIT中，整个模块（所有函数）必须在任何函数执行之前被JIT编译。由于编译粒度变大了，我们不能再说它是基于函数的，而是基于模块的翻译引擎。
-理解MCJIT如何编译模块
-　　代码生成发生在模块对象加载阶段，由MCJIT::generateCodeForModule()方法触发，它在<llvm_source>/lib/ExecutionEngine/MCJIT/MCJIT.cpp文件中。这个方法执行下面的任务：
-* 创建一个ObjectBuffer实例以存放模块对象。如果模块对象已经被加载（编译），就用ObjectCache接口获取，避免重编译。
-* 假设没有之前的缓存（cache），MCJIT::emitObject()就执行MC代码生成。结果是一个ObjectBufferStream对象（ObjectBuffer子类，支持streaming）。
-* RuntimeDyld动态链接器加载结果ObjectBuffer对象，并通过RuntimeDyld::loadObject()建立符号表（symbol table）。这个方法返回一个ObjectImage对象。
-* 模块被标记为已加载。
-对象缓冲区，缓存，图像
-　　ObjectBuffer类（<llvm_source>/include/llvm/ExecutionEngine/ObjectBuffer.h）实现了对MemoryBuffer类（<llvm_source>/include/llvm/Support/MemoryBuffer.h）的包装。
-　　MCObjectStreamer子类利用MemoryBuffer类输出指令和数据到内存。此外，ObjectCache类直接引用MemoryBuffer实例，能从彼处获取ObjectBuffer。
-　　ObjectBufferStream类是一个ObjectBuffer子类，带有附加的标准C++流运算符（例如，>>和<<），从实现的视角来看，它让内存缓冲区的读写变得容易。
-　　ObjectImage对象（<llvm_source>/include/llvm/ExecutionEngine/ObjectImage.h）用于保持加载的模块，它可以直接访问ObjectBuffer和ObjectFile的引用。ObjectFile对象由目标特定的目标文件类型具体化，例如ELF、COFF、和MachO。ObjectFile对象能够从MemoryBuffer对象直接获取符号、重定位、和段。
-　　下图说明了这些类是怎么相互关联的——实箭头表示协助，虚箭头表示继承。
-　　（图）
-动态链接
-　　MCJIT加载的模块对象被表示为ObjectImage实例。如前面提到的那样，它可以透明地访问内存缓冲区，通过一个目标无关的ObjectFile接口。因此，它可以处理符号、段、和重定位。
-　　为了生成ObjectImage对象，MCJIT具有动态链接特性，由RuntimeDyld类提供。这个类提供了访问这些特性的公共接口，而RuntimeDyldImpl对象提供实际的实现，它由每个对象的文件类型具体化。
-　　因此，RuntimeDyld::loadObject()方法首先创建目标特定的RuntimeDyldImpl对象，然后调用RuntimeDyldImpl::loadObject()。它根据ObjectBuffer生成ObjectImage对象。在这个过程中，还创建了ObjectFile对象，可以通过ObjectImage对象获取它。下图说明了这个过程：
-　　（图）
-　　运行时RuntimeDyld动态链接器用于让模块就绪过程中解决重定位，为模块对象注册异常处理帧。回想起执行引擎方法getFunctionAddress()和getPointerToFunction()要求引擎知道符号（函数）地址。为了解决这个问题，MCJIT还用RuntimeDyld获取任意的符号地址，通过RuntimeDyld::getSymbolLoadAddress()方法。
-内存管理器
-　　LinkingMemoryManager类，另一个RTDyldMemoryManager子类，是MCJIT引擎所用的实际内存管理器。它聚合了一个SectionMemoryManager实例，向它发送委托请求。
-　　每当RuntimeDyld动态链接器通过LinkingMemoryManager::getSymbolAddress()请求符号地址时，它有两个选择：如果符号在一个已编译的模块中是可获得的，就从MCJIT获取地址；否则，从外部库请求地址，它们由SectionMemoryManager实例加载并映射。下图说明了这个机制。参考<llvm_source>/lib/ExecutionEngine/MCJIT/MCJIT.cpp中的LinkingMemoryManager::getSymbolAddress()，以了解详情。
-　　SectionMemoryManager实例是一个简单的管理器。作为一个RTDyldMemoryManager的子类，SectionMemoryManager继承了它所有的库查询方法，但是通过直接处理低层MemoryBlock单元（<llvm_source>/include/llvm/Support/Memory.h）实现了代码和数据段的分配。
-　　（图）
-MC代码输出
-　　MCJIT通过调用MCJIT::emitObject()执行MC代码输出。这个方法执行下面的任务：
-* 创建一个PassManager对象。
-* 添加一个目标布局Pass，调用addPassesToEmitMC()以添加所有代码生成Pass和MC代码输出。
-* 利用PassManager::run()方法运行所有的Pass。结果代码存储在一个ObjectBufferStream对象中。
-* 添加已编译的对象到ObjectCache实例并返回它。
-　　MCJIT的代码生成比原先的JIT更一致。不是给JIT提供定制的输出器和目标信息，MCJIT透明地访问存在的MC基础结构的所有信息。
-让对象就绪
-　　最终，MCJIT::finalizeLoadedModules()让模块对象就绪：重定向已解决，已加载模块被移到已就绪模块组，调用LinkingMemoryManager::finalizeMemory()以改变内存页面权限。对象就绪之后，MCJIT编译的函数已准备好执行了。
-使用MCJIT引擎
-　　下面的sum-mcjit.cpp源文件包含了JIT编译Sum函数所必需的代码，利用MCJIT框架，而不是原先的JIT。为了表明它和前面的JIT例子的相似之处，我们保留了原先的代码，并用布尔变量UseMCJIT来决定使用原先的JIT还是MCJIT。因为代码和前面的sum-jit.cpp相当类似，我们将避免详细介绍前面的例子已经给出的代码片段。
-　　1. 首先，包含MCJIT头文件，如下面的代码所示：
-#include "llvm/ExecutionEngine/MCJIT.h"
-　　2. 包含其它必需的头文件，导入llvm名字空间:
-#include "llvm/ADT/OwningPtr.h"
-#include "llvm/Bitcode/ReaderWriter.h"
-#include "llvm/ExecutionEngine/JIT.h"
-#include "llvm/IR/LLVMContext.h"
-#include "llvm/IR/Module.h"
-#include "llvm/Support/MemoryBuffer.h"
-#include "llvm/Support/ManagedStatic.h"
-#include "llvm/Support/TargetSelect.h"
-#include "llvm/Support/raw_ostream.h"
-#include "llvm/Support/system_error.h"
-#include "llvm/Support/FileSystem.h"
-using namespace llvm;
-　　3. 将UseMCJIT设置为true，以测试MCJIT。设置为false就用原先的JIT运行这个例子，如下面的代码所示：
-bool UseMCJIT = true;
-
-int main() {
-  InitializeNativeTarget();
-
-　　4. MCJIT需要初始化汇编解析器和打印器：
-  if (UseMCJIT) {
-　　InitializeNativeTargetAsmPrinter();
-　　InitializeNativeTargetAsmParser();
-  }
-
-  LLVMContext Context;
-  std::string ErrorMessage;
-  OwningPtr<MemoryBuffer> Buffer;
-
-  if (MemoryBuffer::getFile("./sum.bc", Buffer)) {
-　　errs() << "sum.bc not found\n";
-　　return -1;
-  }
-
-  Module *M = ParseBitcodeFile(Buffer.get(), Context, &ErrorMessage);
-  if (!M) {
-　　errs() << ErrorMessage << "\n";
-　　return -1;
-  }
-　　5. 创建执行引擎，调用SetUseMCJIT(true)方法，让引擎使用MCJIT，如下面的代码所示：
-  OwningPtr<ExecutionEngine> EE;
-  if (UseMCJIT)
-　　EE.reset(EngineBuilder(M).setUseMCJIT(true).create());
-  else
-    EE.reset(EngineBuilder(M).create());
-　　6. 原先的JIT需要Function引用，用于以后获取函数指针，销毁分配的内存：
-  Function* SumFn = NULL;
-  if (!UseMCJIT)
-    SumFn = cast<Function>(M->getFunction("sum"));
-　　7. 如前所述，MCJIT淘汰了getPointerToFunction()，在MCJIT中只能用getFunctionAddress()。因此，对于各个JIT类别，要用正确的方法：
-  int (*Sum)(int, int) = NULL;
-  if (UseMCJIT)
-　　Sum = (int (*)(int, int)) EE->getFunctionAddress(std::string("sum"));
-  else
-　　Sum = (int (*)(int, int)) EE->getPointerToFunction(SumFn);
-  int res = Sum(4, 5);
-  outs() << "Sum result: " << res << "\n";
-  res = Sum(res, 6);
-  outs() << "Sum result: " << res << "\n";
-　　8. 因为MCJIT一次编译整个模块，释放Sum函数的机器代码内存在原先的JIT中才有意义：
-  if (!UseMCJIT)
-　　EE->freeMachineCodeForFunction(SumFn);
-　　
-  llvm_shutdown();
-  return 0;
-}
-
-　　要编译和链接sum-mcjit.cpp，用下面的命令：
-$ clang++ sum-mcjit.cpp -g -O3 -rdynamic -fno-rtti $(llvm-config --cppflags --ldflags --libs jit mcjit native irreader) -o sum-mcjit
-
-　　或者，修改第3章（工具和设计）的Makefile。运行这个例子，检验输出：
-$ ./sum-mcjit
-Sum result: 9
-Sum result: 15
-使用LLVM JIT编译工具
-　　LLVM提供了一些JIT引擎的工具。lli和llvm-rtdyld就是它们的例子。
-使用lli工具
-　　利用这一章学习的LLVM执行引擎，解释工具（lli）实现了一个LLVM bitcode解释器和JIT编译器。考虑下面的源文件，sum-main.c：
-#include <stdio.h>
-
-int sum(int a, int b) {
-  return a + b;
-}
-
-int main() {
-  printf("sum: %d\n", sum(2, 3) + sum(3, 4));
-  return 0;
-}
-　　lli工具能够运行bitcode文件，只要有main函数。用clang生成sum-main.bc bitcode文件：
-$ clang -emit-llvm -c sum-main.c -o sum-main.bc
-　　现在，通过lli利用原先的JIT编译引擎运行bitcode：
-$ lli sum-main.bc
-sum: 12
-　　或者，用MCJIT引擎：
-$ lli -use-mcjit sum-main.bc
-sum: 12
-　　也有应用解释器的标记，它一般是很慢的：
-$ lli -force-interpreter sum-main.bc
-sum: 12
-使用llvm-rtdyld工具
-　　llvm-rtdyld工具（）是一个非常简单的测试MCJIT对象加载和链接框架的工具。它能够从磁盘读取二进制目标文件，执行通过命令行指定的函数。它不作JIT编译和执行，但是让你能够测试和运行目标文件。
-　　考虑下面三个C源代码文件： main.c，add.c，和sub.c：
-　　. main.c
-　　int add(int a, int b);
-　　int sub(int a, int b);
-　　int main() {
-　　  return sub(add(3, 4), 2);
-　　}
-　　
-　　. add.c
-　　int add(int a, int b) {
-　　  return a+b;
-　　}
-　　
-　　. sub.c
-　　int sub(int a, int b) {
-　　  return a-b;
-　　}
-　　编译它们为目标文件：
-$ clang -c main.c -o main.o
-$ clang -c add.c -o add.o
-$ clang -c sub.c -o sub.o
-　　利用llvm-rtdyld工具执行main函数，以-entry和-execute选项：
-$ llvm-rtdyld -execute -entry=_main main.o add.o sub.o; echo $? loaded '_main' at: 0x104d98000
-5
-　　另一个选项是，为编译了调试信息的函数打印行信息，它是-printline。举例来说，看下面的命令行：
-$ clang -g -c add.c -o add.o
-$ llvm-rtdyld -printline add.o
-Function: _add, Size = 20
-  Line info @ 0: add.c, line: 2
-  Line info @ 10: add.c, line: 3
-  Line info @ 20: add.c, line: 3
-　　我们看到，llvm-rtdyld工具在实践中运用了MCJIT框架的对象抽象。llvm-rtdyld工具读取一系列二进制目标文件到ObjectBuffer对象，通过RuntimeDyld::loadObject()生成ObjectImage实例。加载所有目标文件之后，由RuntimeDyld::resolveRelocations()解决重定位。接着，通过getSymbolAddress()解决入口点（entry point），并调用函数。
-　　llvm-rtdyld工具用了一个定制的内存管理器，TrivialMemoryManager。这是一个易于理解的简单的RTDyldMemoryManager子类的实现。
-　　这个了不起的概念验证工具让你理解了MCJIT框架涉及的基础概念。
-其它的资源
-　　通过在线文档和例子学习LLVM JIT，有其它资源。在LLVM源代码树中，<llvm_source>/examples/HowToUseJIT和<llvm_source>/examples/ParallelJIT包含了简单的源代码例子，可用于学习JIT基础。
-　　LLVM kaleidoscope教程（http://llvm.org/docs/tutorial）有具体的章节介绍如何使用JIT（http://llvm.org/docs/tutorial/LangImpl4.html）。
-　　想了解更多关于MCJIT设计和实现的信息，请查看http://llvm.org/docs/MCJITDesignAndImplementation.html。
-总结
-　　JIT编译是一种运行时编译特性，存在于多个虚拟机环境中。在本章中，通过展示截然不同的实现，即原先的JIT和MCJIT，我们探索了LLVM JIT执行引擎。此外，我们考察了两种方案的实现细节，给出了实际的例子来解释如何用JIT引擎编译工具。
-　　在下一章，我们将介绍交叉编译、工具链、和如何创建基于LLVM的交叉编译器。
-
-第8章 交叉平台编译
-##################
-
-　　传统的编译器将源代码转换为本地的可执行文件。在此上下文中，本地意味着可执行文件运行的平台和编译器的平台相同，平台是硬件、操作系统、应用程序二进制接口（ABI）、和系统接口的选择的结合。这些选择定义了一种机制，用户层程序利用这种机制，和背后的系统通信。因此，如果你使用GNU/Linux x86机器上的编译器，它生成的可执行文件会链接你的系统库，被定做为在完全相同的平台上运行。
-　　交叉平台编译是一个用编译器为不同的、非本地的平台生成可执行文件的过程。如果生成的代码需要链接的库不同于你本身系统的库，一般可以通过设置编译选项来解决。然而，如果你想要部署可执行文件的目标平台和你的平台不兼容，比如用了不同的处理器架构、操作系统、ABI、或者目标文件，你需要采用交叉编译。
-　　当为资源有限的系统开发应用程序时，交叉编译器是至关重要的。举例来说，嵌入式系统通常由低性能的处理器和有限的内存组成，由于编译过程会密集占用CPU和内存，在这样的系统上运行编译器，如果可能的话，是很慢的，会耽搁应用开发周期。因此，在这样的场景中，交叉编译器是极有用的工具。在这一章中，我们将讨论下面的内容：
-* 对Clang和GCC交叉编译方案的比较
-* 什么是工具链？
-* 如何用Clang命令行执行交叉编译？
-* 如何通过生成定制的Clang执行交叉编译？
-* 流行的用于测试目标二进制程序的模拟器和硬件平台
-比较GCC和LLVM
-　　像GCC这样的编译器要支持交叉编译，必须以特别的配置编译出来，为每个目标安装不同的GCC。通常在实践中，举例来说，会给你的gcc命令添加一个目标名称前缀，例如arm-gcc，表示针对ARM的GCC交叉编译器。然而，Clang/LLVM通过简单地开关同一个Clang驱动器的命令行选项，选择期望的目标、库路径、头文件、链接器、和汇编器，可以为其它目标生成代码。因此，一个Clang驱动器，适用所有的目标。不过，有些LLVM发布版不包含所有的目标，由于某种考虑，比如可执行文件的大小。另一方面，如果你自己编译LLVM，可以选择支持哪些目标；参见第1章，编译和安装LLVM。
-　　相比LLVM，GCC是一个更古老的项目，自然也是一个更成熟的项目。它支持50多个后端，广泛地被这些平台用作交叉编译器。然而，由于GCC设计的限制，它的驱动器只能以安装为单位处理单个目标库。这就是为什么，必须部署安装不同的GCC，以为其它目标生成代码。
-　　与此相反，Clang驱动器默认编译和链接所有的目标库。在运行时，即使Clang需要知道几个目标特性，Clang/LLVM组件可以通过目标无关的接口访问任意目标的信息，这些接口被设计用于提供任何命令行指定的目标的信息。
-　　下图说明了LLVM和GCC是如何为不同的目标编译一份源代码的；前者动态地为截然不同的处理器生成代码，而后者需要为每个处理器安装一个不同的交叉编译器。
-　　（图）
-　　你也可以编译一个专用的Clang交叉编译器，像GCC那样。虽然这种选择要付出更多工夫以编译安装一个单独的Clang/LLVM，但是它的命令行接口更易于使用。在配置的时候，用户可以提供固定的指向目标库、头文件、汇编器、和链接器的路径，避免每次执行交叉编译时都要输入大量的命令行参数。
-　　在这一章中，我们将展示如何用Clang为多个平台生成代码，通过驱动器命令行参数，以及如何生成一个特殊的Clang交叉编译器的驱动器。
-理解目标三元组
-　　我们从三个重要的定义开始，具体如下：
-Build表示编译交叉编译器的平台
-Host表示交叉编译器将运行的平台
-Target表示交叉编译器运行生成的可执行文件或者库所针对的平台
-　　在标准的交叉编译器中，Build和Host平台是相同的。目标三元组定义了Build、Host、和Target平台。三元组用信息唯一地指定一个目标，此信息包括处理器架构、操作系统版本、C库类别、和目标文件类型。
-　　三元组的格式不是严格规定的。举例来说，GNU工具，在格式<arch>-<sys/vendor>-<other>-<other>中，可能接受包含两个、三个、甚至四个字段的三元组，例如arm-linux-eabi、mips-linux-gnu、x86_64-linux-gnu、x86_64-apple-darwin11、和sparc-elf。Clang努力和GCC保持兼容，因而认可上面的格式，但是它在内部会将任意三元组规范为自己的三元组，<arch><sub>-<vendor>-<sys>-<abi>。
-　　下面的表格列出了每个LLVM三元组字段的可能选项；<sub>字段没有包含在其中，因为它表示架构变种，例如armv7架构的v7。查看<llvm_source>/include/llvm/ADT/Triple.h，了解三元组详细内容。
-　　（表）
-　　注意，不是所有arch、vendor、sys、和abi组合是有效的。每种架构支持有限数量的组合。
-　　下图说明了一种ARM交叉编译器的概念，它在x86上被编译，在x86上运行，生成ARM可执行文件。好奇的读者可能想知道，如果Host和Build平台是不同的会怎样。这种组合形成加拿大型交叉编译器，过程稍微复杂一点，要求下图中的深色Compiler框是另一个交叉编译器，而不是本地编译器。加拿大型交叉这个名字是根据这样的事实提出的，即在当时名字提出时加拿大有三个政党，以及加拿大型交叉编译器用到三个平台。举例来说，如果你将交叉编译器发布给用户，他们期望支持的平台不同于你自己的。
-　　（图）
-准备工具链
-　　编译器这个术语意味着一组编译相关的任务，有多个组件执行，例如前端、后端、汇编器、和链接器。它们之中，有些是由单独的工具实现的，而其它的是集成在一起的。然而，当为本地或者其它目标开发应用程序时，用户需要更多资源，例如平台相关的库、调试器、和执行任务的工具，举例来说，读取目标文件的工具。因此，平台制造者常常在他们的平台中为软件开发发布一批工具，从而为客户提供了一套开发工具链。
-　　为了生成或者使用你的交叉编译器，需要知道工具链组件，以及它们之间如何交互，这是非常重要的。下图显示了成功交叉编译所必需的主要工具链组件，而后面的小节将描述每个组件：
-　　（图）
-标准C和C++库
-　　C库是必需的，以支持标准的C语言功能，例如内存分配（malloc()/free()），字符串处理（strcmp()），和IO（printf()/scanf()）。普遍的C库头文件的例子，包括stdio.h、stdlib.h、和string.h。可用的C库实现不止一种。GNU C库（glibc）、newlib、和uClibc是广为人知的例子。这些库可用于不同的目标，并且可用移植到新的目标。
-　　类似地，C++标准库实现了C++功能，例如输入和输出流、容器、字符串处理、和线程支持。GNU的libstdc++和LLVM的libc++（http://libcxx.llvm.org）是实现的例子。实际上，完整的GNU C++库由libstdc++和libsupc++组成。后者是一个让移植变得容易的目标相关的层级，它专门处理异常处理和RTTI。对于除了Mac OS X的系统，LLVM的libc++实现仍然依赖于第三方的libsupc++的替代物（参见第2章（外部项目）的“介绍libc++标准库”小节，以了解详情）。
-　　交叉编译器需要知道目标C/C++库和头文件的路径，这样它才能找到正确的函数原型，之后才能正确地链接。头文件要匹配已编译的库，版本和实现都有匹配，这是重要的事情。举例来说，错误配置的交叉编译器可能改为搜索本地系统的头文件，导致编译错误。
-运行时库
-　　每个目标都需要使用特殊的函数来模拟低层级的本地不支持的函数。例如，32位的目标通常缺乏64位寄存器，无法直接处理64位类型。因此，目标可能使用两个32位寄存器并调用特殊的函数来执行简单的算术运算（加、减、乘、除）。
-　　代码生成器生成对这些函数的调用，期望在链接的时候它们可以被找到。驱动器必须给出必需的库，而不是用户。在GCC中，这个功能由运行时库libgcc实现。LLVM提供了完全替代品，称为compiler-rt（见第2章外部项目）。因此，Clang驱动器在调用链接器时，使用参数-lgcc，或者-lclang-rt（以链接compiler-rt）。再说一次，为了正确地被链接，目标特定的运行时库必须存在于路径中。
-汇编器和链接器
-　　汇编器和链接器通常由不同的工具提供，编译器驱动器会调用它们。举例来说，GNU Binutils提供的汇编器和链接器支持若干个目标，对于本地目标，通常可以在系统路径中找到它们，分别命名为as和ld。也有一个基于LLVM的链接器，但仍然是实验性的，称为lld（http://lld.llvm.org）。
-　　为了调用这样的工具，目标三元组被用作汇编器和链接器的名字的前缀，并且在系统的PATH变量中查找它们。举例来说，当为mips-linux-gnu生成代码时，驱动器可能会搜索mips-linux-gnu-as和mips-linux-gnu-ld。根据目标三元组信息，Clang在搜索的时候可能有所不同。
-　　在Clang中，有些目标不需要调用外部的汇编器。由于LLVM通过MC层提供了直接的目标代码输出，驱动器可以使用集成的MC汇编器，通过选项integrated-as，对于某些特定的目标，它是默认开启的。
-Clang前端
-　　在第5章（LLVM中间表示）中，我们解释了Clang输出的LLVM IR不是目标无关的，因为C/C++语言就不是目标无关的。除了后端之外，前端也必须实现目标特定的约束。因此，你必须意识到，虽然Clang支持某个特定的处理器，但是，如果目标三元组不严格地匹配这个处理器，前端可能生成不完美的LLVM IR，它可能导致ABI不匹配和运行时错误。
-Multilib
-　　Multilib让用户能够在相同的平台上运行为不同的ABI而编译的应用程序。这个机制避免了多个交叉编译器，只要一个交叉编译器可以访问每个ABI变体的库和头文件的已编译的版本。举例来说，multilib允许soft-float和hard-float库并存，就是说，一个库依赖于软件模拟浮点数算术运算，一个库依赖于处理器FPU处理浮点数。例如，GCC每个multilib版本都有几个libc和libgcc的版本。
-　　举例来说，在MIPS GCC中，multilib库的文件夹结构的组织方式如下：
-* lib/n32：这里存放n32库，支持n32 MIPS ABI
-* lib/n32/EL：这里存放libgcc、libc、和libstdc++的小端（little-endian）版本
-* lib/n32/msoft-float：这里存放n32 soft-float库
-* lib/n64：这里存放n64库，支持n64 MIPS ABI
-* lib/n64/EL：这里存放libgcc、libc、和libstdc++的小端（little-endian）版本
-* lib/n64/msoft-float：这里存放n64 soft-float库
-　　Clang支持multilib环境，只要为库和头文件提供了正确的路径。然而，因为前端可能为有些目标的不同的ABI生成不同的LLVM IR，有必要核对你的路径和目标三元组，确保它们是匹配的，避免运行时错误。
-Clang命令行参数交叉编译
-　　现在你知道了每个工具链组件，我们将展示如何将Clang用作交叉编译器，通过使用合适的驱动器参数。
-　　Note
-　　这节中的所有例子都在运行Ubuntu 12.04的x86_64机器上测试过。我们使用Ubuntu特定的工具下载了一些依赖软件，但是Clang相关的命令应该不经修改（或者稍微修改）就可以在任何其它的OS环境中使用。
-驱动器的目标选项
-　　Clang通过-target=<triple>驱动器选项动态地选择目标三元组，而为之生成代码。除了三元组，可以用其它的选项以更精细地选择目标：
-* 选项-march=<arch>选择目标的基础架构。<arch>值的例子，包括ARM的armv4t、armv6、armv7、和armv7f，MIPS的mips32、mips32r2、mips64、和mips64r2。这个选项还单独地选定一个默认的基础CPU，为代码生成器所用。
-* 选项-mcpu=<cpu>选择具体的CPU。例如，cortex-m3和cortex-a8是ARM具体的CPU，pentium4、athlon64、和corei7-avx2是x86 CPU。每个CPU有一个基础<arch>值，为目标所定义，并为驱动器所用。
-* 选项-mfloat-abi=<abi>决定哪种寄存器用于存放浮点值：soft或者hard。如前所述，这决定了是否使用软件浮点数模拟。这还隐含了对调用惯例和其它ABI规范的改变。别名选项-msoft-float和-mhard-float也是可用的。注意，如果没有设定此选项，ABI类型会遵从所选CPU的默认类型。
-　　可以用clang--help-hidden参数查看其它目标特定的开关，它甚至将展示传统帮助信息所隐藏的选项。
-依赖
-　　我们将以ARM交叉编译器为活的例子演示如何用Clang作交叉编译。第一步是在你的系统上安装一份完整的ARM工具链，并识别所提供的组件。
-　　要为拥有hard浮点数ABI的ARM安装GCC交叉编译器，可以用下面的命令：
-$ apt-get install g++-4.6-arm-linux-gnueabihf gcc-4.6-arm-linux-gnueabihf
-　　要为拥有soft浮点数ABI的ARM安装GCC交叉编译器，可以用下面的命令：
-$ apt-get install g++-4.6-arm-linux-gnueabi gcc-4.6-arm-linux-gnueabi
-Note
-　　我们刚才让你安装了完整的GCC工具链，包括交叉编译器！为什么现在你会需要Clang/LLVM呢？如工具链一节解释的那样，在交叉编译期间，编译器自身充当了若干组件的组合中的一小部分，这些组件包括汇编器、链接器、和目标库。你应该寻找你的目标平台供应商准备的工具链，因为只有这个工具链才拥有正确的头文件和库，为你的目标平台所用。典型地，这份工具链也已经随GCC编译器发布了。我们想做的则是使用Clang/LLVM，但是我们还依赖所有其它的工具链组件。
-　　如果你想编译所有目标库，并自己准备整个工具链，你还需要准备操作系统image，以启动目标平台。如果你自己编译系统image和工具链，你要确保两者关于目标系统所用库的版本保持一致。如果你喜欢从头编译一切，可以参考关于此的交叉Linux从头开始教程（http://trac.cross-lfs.org），它是一份不错的指南。
-　　尽管apt-get会自动地安装工具链必备工具，对于基于Clang的C/C++ ARM交叉编译器，需要的和推荐的基础包如下：
-* libc6-dev-armhf-cross和libc6-dev-armel-cross
-* gcc-4.6-arm-linux-gnueabi-base和gcc-4.6-arm-linux-gnueabihf-base
-* binutils-arm-linux-gnueabi和binutils-arm-linux-gnueabihf
-* libgcc1-armel-cross和libgcc1-armhf-cross
-* libstdc++6-4.6-dev-armel-cross和libstdc++6-4.6-dev-armhf-cross
-交叉编译
-　　尽管我们对于GCC交叉编译器本身不感兴趣，前面小节的命令安装了必需的必备工具，它们是我们的交叉编译器需要的：链接器、汇编器、库、和头文件。你可以用下面的命令为arm-linux-gnueabihf平台编译sum.c程序（来自第7章，即时编译器）：
-$ clang --target=arm-linux-gnueabihf sum.c -o sum
-$ file sum
-sum: ELF 32-bit LSB executable, ARM, version 1 (SYSV), dynamically linked (uses shared libs)...
-　　Clang从GNU arm-linux-gnueabihf工具链找到了所有必需的组件，生成了最终的代码。在此例中，默认所用的架构是armv6，但是我们可以提供更具体的--target参数，并且使用-mcpu，以达到更精确的代码生成：
-$ clang --target=armv7a-linux-gnueabihf -mcpu=cortex-a15 sum.c -o sum
-安装GCC
-　　--target指定的目标三元组被Clang用以搜索具有相同或相似前缀的GCC安装。如果找到了若干个候选者，Clang会选择它认为最匹配目标的那一个：
-$ clang --target=arm-linux-gnueabihf sum.c -o sum -v
-clang version 3.4 (tags/RELEASE_34/final)
-Target: arm--linux-gnueabihf
-Thread model: posix
-Found candidate GCC installation: /usr/lib/gcc/arm-linux-gnueabihf/4.6
-Found candidate GCC installation: /usr/lib/gcc/arm-linux-gnueabihf/4.6.3
-Selected GCC installation: /usr/lib/gcc/arm-linux-gnueabihf/4.6
-(...)
-　　因为一个GCC安装通常带有汇编器、链接器、库、和头文件，Clang在安装中找到想要的工具链组件。通过提供系统中存在的工具链的确切名字的三元组，获得这样的路径通常是直接明了。然而，如果三元组是不同的或者不完整的，驱动器就会搜索并选择它认为最匹配的那一个：
-$ clang --target=arm-linux sum.c -o sum -v
-...
-Selected GCC installation: /usr/lib/gcc/arm-linux-gnueabi/4.7
-clang: Warning: unknown platform, assuming -mfloat-abi=soft
-　　注意，尽管我们为arm-linux-gnueabi和arm-linux-gnueabihf安装了GCC工具链，驱动器选择了前者。在此例中，因为所选的平台是未知的，它假设ABI是soft-float。
-潜在的问题
-　　如果添加-mfloat-abi=hard选项，驱动器就忽略警告信息，仍然选择arm-linux-gnueabi而不是arm-linux-gnueabihf。这导致最终的可执行文件大概由于运行时错误无法运行，因为hard-float对象链接了soft-float库：
-$ clang --target=arm-linux -mfloat-abi=hard sum.c -o sum
-　　为什么不选择arm-linux-gnueabihf，即使输入了-mfloat-abi=hard？这是因为我们没有特别地要求clang使用arm-linux-gnueabihf工具链。如果你让驱动器作决定，它将选择找到的第一个工具链，而它可能不合乎需要。这个例子让你明白，驱动器可能会不选择最佳的选项，如果你指定的目标三元组是模糊的或不完整的，例如arm-linux。
-　　知道背后所用的工具链组件是十分重要的，以确认是否选择了正确的工具链，例如，通过使用-###参数来打印clang在编译、汇编、和链接程序的过程中调用了哪些工具。
-　　让我们尝试更模糊的目标三元组，看看究竟会发生什么。我们只使用--target=arm选项：
-$ clang --target=arm sum.c -o sum
-/tmp/sum-3bbfbc.s: Assembler message:
-/tmp/sum-3bbfbc.s:1: Error: unknown pseudo-op: `.syntax'
-/tmp/sum-3bbfbc.s:2: Error: unknown pseudo-op: `.cpu'
-/tmp/sum-3bbfbc.s:3: Error: unknown pseudo-op: `.eabi_attribute'
-(...)
-　　从三元组中去除了OS，驱动器被糊涂了，产生一个编译错误。事实上，驱动器试图用本地（x86_64）汇编器去汇编ARM汇编语言。由于目标三元组是相当不完整的，没有OS信息，对于驱动器来说，我们的arm-linux工具链不是满意的匹配，这样它就采用了系统汇编器。
-修改系统根目录
-　　通过查找系统中存在的具有给定三元组的GCC交叉编译器，在GCC安装目录中扫描一列已知的前缀（参见<llvm_source>/tools/clang/lib/Driver/ToolChains.cpp），驱动器能够找到支持目标的工具链。
-　　对于某些别的情况——不正确格式的三元组或者不存在的GCC交叉编译器——为了使用可用的工具链组件，必须告诉驱动器特别的选项。例如，--sysroot选项修改基础目录，Clang在其中搜索工具链组件，每当目标三元组没有提供足够的信息时，就可用这个选项。类似地，可以用--gcc-toolchain=<value>指定你想用的一个具体的工具链的文件夹。
-　　在我们的系统上安装的ARM工具链中，为arm-linux-gnueabi三元组所选的GCC安装路径是/usr/lib/gcc/arm-linux-gnueabi/4.6.3。从这个目录，Clang到达其它的路径以访问库、头文件、汇编器、和链接器。一个它可到达的路径是/usr/arm-linux-gnueabi，其中包含下面的子目录：
-$ ls /usr/arm-linux-gnueabi
-bin  include  lib  usr
-　　这些文件夹中的工具链组件的组织方式，跟文件系统的/bin、/include、/lib、和/usr根文件夹中的本地工具链组件一样。考虑我们想要为带有cortex A9 CPU的armv7-linux生成代码，不依靠驱动器自动地为我们寻找组件。只要我们知道arm-linux-gnueabi的组件在何处，我就可以为驱动器提供--sysroot参数：
-$ PATH=/usr/arm-linux-gnueabi/bin:$PATH /p/cross/bin/clang --target=armv7a-linux --sysroot=/usr/arm-linux-gnueabi -mcpu=cortex-a9 -mfloat-abi=soft sum.c -o sum
-　　再一次，这是非常有用的，当有可用的工具链组件而没有GCC实体安装的时候。为什么这个方法是可行的？下面列出了三个主要的理由：
-* armv7a-linux：armv7a触发为ARM和linux的代码生成。它做的事情，其中之一就是告诉驱动器使用GNU汇编器和链接器的调用语法。如果没有指定OS，Clang默认采用Darwin汇编器语法，导致一个汇编器错误。
-* /usr、/lib、和/usr/include文件夹是编译器搜索库和头文件的默认位置。选项--sysroot覆盖了驱动器默认设置，查看/usr/arm-linux-gnueabi以寻找这些目录，而不是系统根目录。
-* PATH环境变量被修改了，以避免使用as和ld的默认版本。然后我们强制驱动器首先查看路径/usr/arm-linux-gnueabi，在其中找到了ARM版本的as和ld。
-生成一个Clang交叉编译器
-　　Clang支持动态地为任意目标生成代码，如前面小节看到的那样。但是，生成一个目标专用的Clang交叉编译器的理由是存在的：
-假如用户不想使用长长的命令行来调用驱动器
-假如制造者想交付给客户一个平台特定的基于Clang的工具链
-配置选项
-　　LLVM配置系统中，协助交叉编译器生成的选项如下：
-* --target：这个选项指定了默认目标三元组，Clang交叉编译器为之生成代码。这关联早先我们定义的target、host、和build概念。选项--host和--build也是可用的，但是配置脚本估计了它们的值——两者都指向本地平台。
-* --enable-targets：这个选项指定安装将支持的目标。如果省略了，将支持所有目标。记住，必须用前面解释的命令行选项选择不同于默认值的目标，默认值是由--target指定的。
-* --with-c-include-dirs：这个选项指定目录列表，交叉编译器应在其中搜索头文件。这个选项避免了过度地使用-I来定位目标特定的库，它们可能不在规范的路径中。此外，这些目录先于系统默认目录被搜索。
-* --with-gcc-toolchain：这个选项指定已经存在于系统中的目标GCC工具链。这个选项定位了工具链组件，交叉编译器固定住它们，就像用永久的--gcc-toolchain选项。
-* --with-default-sysroot：这个选项为交叉编译器执行的所有编译器调用添加--sysroot选项。
-　　用<llvm_source>/configure --help查看所有LLVM/Clang配置选项。额外（隐藏）的配置选项可用于考察目标特定的特性，例如--with-cpu、--with-float、--with-abi、和--with-fpu。
-编译安装你的基于Clang的交叉编译器
-　　配置、编译、和安装交叉编译器的方法和编译LLVM和Clang的传统方法非常类似，后者已在第1章编译和安装LLVM中解释过了。
-　　因此，假设源代码已准备好，就可以用下面的命令，默认以Cortex-A9为目标，生成一个LLVM ARM交叉编译器：
-$ cd <llvm_build_dir>
-$ <PATH_TO_SOURCE>/configure --enable-target=arm --disable-optimized --prefix=/usr/local/llvm-arm --target=armv7a-unknown-linux-gnueabi
-$ make && sudo make install
-$ export PATH=$PATH:/usr/local/llvm-arm
-$ armv7a-unknown-linux-gnueabi-clang sum.c -o sum
-$ file sum
-sum: ELF 32-bit LSB executable, ARM, version 1 (SYSV), dynamically linked (uses shared libs)...
-　　记得在“理解目标三元组”一节，GCC兼容的目标三元组可以有多至四个元素，但是一些工具接受元素较少的三元组。至于LLVM所用的配置脚本，它是由GNU自动工具生成的，它期望目标三元组包含全部四个元素，其中第二个元素是厂商信息。由于我们的平台没有具体的厂商，我们将我们的三元组扩展为armv7a-unknown-linux-gnueabi。如果我们在此处坚持使用三个元素的三元组，配置脚本会失败。
-　　不需要用额外的选项来检测工具链，因为Clang照常会查找GCC安装。
-　　假设你编译并安装了另外的ARM库和头文件，分别位于/opt/arm-extra-libs/lib和/opt/arm-extra-libs/include目录。通过使用--with-c-include-dirs=/opt/arm-extra-libs/include，可以永久地将这个目录添加到Clang头文件搜索路径；为了正确地链接，-L/opt/arm-extra-libs/lib还是需要加的。
-$ <PATH_TO_SOURCE>/configure --enable-target=arm --disable-optimized --prefix=/usr/local/llvm-arm --target=armv7a-unknown-linux-gnueabi --with-c-include-dirs=/opt/arm-extra-libs/include
-　　类似地，我们可以添加sysroot（--sysroot）选项，还指定GCC工具链（--with-gcc-toolchain），让驱动器总是使用它们。对于所选的ARM三元组，这是冗余的，但是可能对其它目标有用：
-$ <PATH_TO_SOURCE>/configure --enable-target=arm --disable-optimized --prefix=/usr/local/llvm-arm --target=armv7a-unknown-linux-gnueabi --with-gcc-toolchain=arm-linux-gnueabi --with-default-sysroot=/usr/arm-linux-gnueabi
-别的编译方法
-　　我们可以用其它的工具生成基于LLVM/Clang的工具链，或者用LLVM中其它的编译系统。另一个可选的方法是创建一个封装使过程变得容易。
-　　Ninja
-　　生成交叉编译器的一个可选方法是使用CMake和Ninja。Ninja项目的意图是成为一个小而快的编译系统。
-　　不是以传统的配置和编译步骤来生成交叉编译器，而是用特别的CMake选项为Ninja生成适合的编译指令，然后Ninja为想要的目标编译并安装交叉编译器。
-　　关于如何应用这个方法的说明和文档见http://llvm.org/docs/HowToCrossCompileLLVM.html。
-　　ELLCC
-　　ELLCC工具是一个基于LLVM的框架，用于为嵌入式目标生成工具链。
-　　它致力于为交叉编译器的生成和使用创建简易的资源。它是可扩展的，支持新的目标配置，开发者易于用它让他们的程序多目标化。
-　　ELLCC还编译并安装若干个工具链组件，包括调试器和平台测试QEMU（如果可用）。
-　　ecc工具是最终可用的交叉编译器。它在Clang交叉编译器上建了一层，接受GCC和Clang兼容的命令行选项，为任意支持的目标编译程序。你可以在http://ellcc.org了解更多。
-　　EmbToolkit
-　　嵌入式系统工具包是另一个为嵌入式系统生成工具链的框架。它支持生成基于Clang或LLVM的工具链，同时编译它的组件并提供一个根文件系统。
-　　它为组件选择提供ncurses和GUI接口。你可以在https://www.embtoolkit.org了解更多详情。
-测试
-　　检验交叉编译是否成功的最合理的方式是在真实的目标平台上运行结果可执行文件。然而，当真实的目标不可用或承担不起时，可以采用几个仿真方法来测试你的程序。
-开发板
-　　有若干种开发板，适用于众多平台。如今，开发板是买得起的，可以在网上买到。例如，可以找到ARM开发板，从简单的Cortex-M系列处理器到多核Cortex-A系列。
-　　外围设备组件多样，但是在这些板子上通常都有网卡、Wi-Fi、USB、和内存卡。因此，交叉编译的应用程序可以通过网络、USB传输，或者写到闪存卡上并且在裸机或者嵌入式Linux/FreeBSD系统上执行。
-　　这样的开发板的部分例子如下：
-Name
-Features
-Architecture/Processor
-Link
-Panda Board
-Linux, Android, Ubuntu
-ARM, Dual Core Cortex A9
-http://pandaboard.org/
-Beagle Board
-Linux, Android, Ubuntu
-ARM, Cortex A8
-http://beagleboard.org/
-SEAD-3
-Linux
-MIPS M14K
-http://www.timesys.com/supported/processors/mips
-Carambola-2
-Linux
-MIPS 24K
-http://8devices.com/carambola-2
-
-　　还有很多带有ARM和MIPS处理器的移动电话，可运行自带开发软件包的Android。还可以尝试运行Clang。
-仿真器
-　　制造商为其处理器开发仿真器是十分常见的，因为软件开发周期甚至在物理平台就绪之前就开始了。带有仿真器的工具链发布给客户，或者用于内部产品测试。
-　　测试交叉编译的程序的一个方法，就是利用这些制造商提供的环境。然而，也有几个开源的仿真器，针对一定数量的架构和处理器。QEMU是一个开源仿真器，支持用户和系统仿真。
-　　在用户仿真模式，QEMU能够仿真孤立的在当前平台上为其它目标编译的可执行文件。例如，用Clang编译和链接的ARM可执行文件，大概能在ARM-QEMU用户仿真器上即买即用。
-　　系统仿真器重现了整个系统的行为，包括外围设备和多核。由于仿真了完整的启动过程，需要一个操作系统。QEMU仿真的完整的开发板是存在的。用它测试裸机目标或者测试交互外围设备的程序也是理想的。
-　　QEMU支持多种架构的不同处理器变种，包括ARM、MIPS、OpenRISC、SPARC、Alpha、和MicroBlaze。你可以在http://qemu-project.org了解更多。
-附加的资源
-　　官方的Clang文档包含非常有价值的关于Clang作为交叉编译器的信息。见http://clang.llvm.org/docs/CrossCompilation.html。
-总结
-　　对于为其它平台开发应用程序来说，交叉编译器是一个重要的工具。Clang从设计的角度出发，让交叉编译成为可随意获得的特性，让驱动器可以动态地执行交叉编译。
-　　在这一章中，我们介绍了构成交叉编译环境的元素，以及Clang如何与之交互以产生目标可执行文件。我们还看到，Clang交叉编译器在某些场景中可能仍然是有用的。我们说明了如何编译、安装、和使用交叉编译器。
-　　在下一章中，我们将介绍Clang静态编译器，展示如何搜索大型的code base以发现常见的漏洞。
-
-第9章 Clang静态分析器
-#####################
-
-　　对于策划构建抽象的装置，人类会感到困难，因为人类难于估量工作量的大小，难于量化工作量。不出意料，由于无法处理不断增加的复杂度，软件项目具有显著的失败历史。如果编译复杂的软件需要大量的协调和组织，那么维护它恐怕是更困难的挑战。
-　　仍然，软件越陈旧越难以维护。这典型地反映出为之付出努力的不同时期的程序员具有迥异的观点。当一个新程序员负责维护一个陈旧的软件的时候，通常的做法是简单地将不易理解的陈旧的代码部分严密地包裹起来，隔离软件，让它成为一个不可修改的程序库。
-　　软件代码如此复杂，使得程序员需要一种新的工具以帮助他们解决隐藏的漏洞。Clang静态分析器的目的，在于提供一种自动的方法，在编译之前分析大型软件代码，助人类一臂之力，以检测C、C++、或者Objective-C项目中的各种各样的常见的漏洞。在这一章中，我们将介绍如下内容：
-* 相比经典的编译器工具，Clang静态分析器输出的警告信息有何不同
-* 如何在简单的项目中使用Clang静态分析器
-* 如何使用scan-build工具处理大的真实世界的项目
-* 如何扩展Clang静态分析器，加入你自己的漏洞检查器
-理解静态分析器的角色
-　　在总体的LLVM设计中，如果一个项目操作原始的源代码（C/C++），它就属于Clang前端，因为根据LLVM IR恢复源代码层信息是困难的。最有意思的基于Clang的工具之一是Clang静态分析器，这个项目利用一套检查器来生成详细的漏洞报告，类似于传统的编译器警告在更小的范围所做的事情。每个检查器检测对一个具体的规则的违背。
-　　如同经典的警告，静态分析器帮助程序员在开发周期的早期发现漏洞，不需要将漏洞检测延迟到运行时。分析是在解析之后进一步编译之前做的。另一方面，这个工具可能需要很多时间处理大量代码，这就是一个很好的理由解释了为什么它没有被集成到典型的编译流程中去。举例来说，静态分析器可能独自花数个小时去处理整个LLVM源代码并运行所有的检查器。
-　　Clang静态分析器至少有两个已知的竞争者：Fortify和Coverity。Hewlett Packard （HP）提供了前者，而Synopsis提供了后者。每个工具都有它的优势和局限，但是只有Clang是开源的，这允许我们hack它，理解它如何工作，这就是这一章的目的。
-对比经典的警告和Clang静态分析器
-　　Clang静态分析器用到的算法具有指数级时间复杂度，这意味着，当被分析的程序单元增长时，处理它所需的时间可能变得非常大。如同在实践中用到的许多指数级时间复杂的算法，它是有界限的，这意味着能够通过应用问题特定的技巧减少执行时间和内存，尽管这不足以让它变成多项式时间复杂度。
-　　指数级时间复杂度的本质解释了这个工具的一个最大的局限：它一次只能分析单个编译单元，不能执行模块间分析，或者处理整个程序。尽管如此，这是一个能力很强的工具，因为它依靠符号执行引擎。
-　　为了举例说明符号执行引擎如何帮助程序员找出错综复杂的漏洞，我们先展示一个简单的漏洞，大多数编译器可以容易地检测到它并输出警告。看下面的代码：
-
-#include <stdio.h>
-void main() {
-  int i;
-  printf ("%d", i);
-}
-　　在此代码中，我们用了一个未初始化的变量，会导致程序的输出依赖于我们不能控制和预测的参数，诸如程序执行之前的内存内容，导致出乎意料的程序行为。因此，一个简单的自动检查能够避免在调试中的巨大麻烦。
-　　如果你熟悉编译器分析技术，你可能已经注意到，我们可以运用前向数据流分析实现这种检查，它利用联合汇聚算子传播每个变量的状态，它是否被初始化。前向数据流分析传播关于每个基本块的变量的状态信息，从函数的第一个基本块开始，将此信息推向后继基本块。汇聚算子决定如何合并多个前面的基本块的信息。联合汇聚算子将设置基本块的属性，为每个前面的基本块集合的联合结果。
-　　在此分析中，如果一个未初始化的定义到达一处使用，我们应该触发一个编译器警告。为此目的，我们的数据流框架将为程序中每个变量赋以如下状态：
-* ⊥符号，当我们不知道任何关于它的信息（未知状态）
-* 已初始化符号，当我们知道变量被初始化了
-* 未初始化符号，当我们确定变量未初始化
-* Т符号，当变量可能已初始化或者未初始化（这表示我们不确定）
-　　下面的示意图显示了对我们给出的简单C程序的数据流分析：
-
-　　我们看到，信息轻松地传播着，穿过代码行。当它到达使用i的printf语句时，框架检查关于这个变量我们知道什么，答案是未初始化，这为输出警告提供了充分的证据。
-　　由于这种数据流分析依靠多项式时间复杂度算法，它非常快。
-　　为了见识这个简单的分析如何会不准确，让我们认识Joe，一个程序员，他精通设计不可检测的错误的艺术。Joe可以非常轻松地迷惑检测器，聪明地在单独的程序路径中模糊实际的变量状态。让我们看一下Joe的一个例子。
-#include <stdio.h>
-void my_function(int unknownvalue) {
-  int schroedinger_integer;
-  if (unknownvalue)
-　　schroedinger_integer = 5;
-  printf("hi");
-  if (!unknownvalue)
-　　printf("%d", schroedinger_integer);
-}
-　　现在让我们看一下我们的数据流框架如何为这个程序计算变量的状态：
-
-　　我们看到，在节点4处，变量第一次被初始化（粗体显示）。然而，有两条不同的路径到达节点5：节点3处的if语句的true和false分支。在一条分支，变量schroedinger_integer未被初始化，而在另一条分支，它被初始化了。汇聚算子决定如何求和前驱的结果。我们的联合算子会尝试两份数据位，将schroedinger_integer声明为T（任何一个）。
-　　当检测器检查使用schroedinger_integer的节点7的时候，不能确定代码是否有漏洞，因为根据此数据流分析，schroedinger_integer可能或可能没有被初始化。换句话说，它完全是状态重叠，已初始化或者未初始化。我们的简单检测器可以尝试警告人们一个未初始化的值被使用了，在这种情况下，它会正确地指出漏洞。但是，如果Joe的代码的上一次检查所用的条件变为if (unknownvalue)，输出警告就是一个误报，因为现在它经过了schroedinger_integer确实被初始化的路径。
-　　我们的检测器发生了丢失精确性，因为数据流框架不是路径敏感的，不能为每个可能执行的路径所发生的事情建模。
-　　误报是非常讨厌的，因为它们迷惑了程序员，受到警告的代码并不包含实际的错误，让报告实际错误的警告变得晦涩。在现实中，如果一个检测器产生了即使少量误报的警告，程序员也很可能忽略全部警告。
-符号化执行引擎的力量
-　　当简单的数据流不足以提供程序的准确信息的时候，符号化执行引擎就发挥作用了。它建造一个可到达程序状态图，能够推理全部可能的代码执行路径，当程序运行时它们可能被走到。记得调试程序时，你只会练习一个路径。当你用一个强大的虚拟机调试程序寻找内存泄漏时，例如valgrind虚拟机，也只是练习一个路径。
-　　相反地，符号化执行引擎能够练习所有路径，而不实际运行你的代码。这是非常强大的特性，但是需要大的运行时来处理程序。
-　　正如经典的数据流框架，引擎按照它将执行每个语句的顺序遍历程序，找到每个变量并赋给它们初始状态。当到达一个控制流改变的构造时，不同之处出现了：引擎将路径一分为二，继续对每个路径单独地分析。这个图称为可到达程序状态图，下面的示意图显示了一个简单的例子，揭示引擎会怎样推理Joe的代码：
-
-　　在此例中，第6行，第一个if语句将可到达状态图分叉为两条不同的路径：在一条路径中，unknown_value是非零，而在另一条中，unknown_value肯定是零。从此处开始，引擎会处理这个关于unknown_value的重要的约束，用它决定下一步选择哪一个分支。
-　　让我们比较可到达程序状态图和相同代码的显示控制流的图，即控制流图，附带着数据流方程提供给我们的经典的推理。看下面的示意图：
-
-　　你注意到的第一件事，是CFG可能分叉以表达控制流改变，但是它也合并节点以避免在可到达程序状态图中看到的组合爆炸。当它合并时，数据流分析可以用联合或者相交决定来合并来自不同路径的信息（第5行的节点）。如果它用联合，我们就得知schroedinger_integer既未初始化，又等于5，如我们的上个例子。如果它用相交，我们就无法得到关于schroedinger_integer的信息（未知状态）。
-　　经典的数据流分析必需合并数据，这是符号化执行引擎所没有的一个限制。这让我们能够得到精确得多的结果，和用若干输入测试你的程序所得到的不相上下，但是以更多的运行时间和内存消耗为代价。
-测试静态分析器
-　　在这一节，我们将探索如何在实践中运用Clang静态分析器。
-使用驱动器和使用编译器
-　　在测试静态分析器之前，你应该始终记得，命令行clang -cc1会直接引用编译器，而使用命令clang会触发编译器驱动器。驱动器负责精心安排编译中涉及的所有其它的LLVM程序的执行，但是它也负责提供关于你的系统的充分的参数。
-　　有些开发者喜欢直接使用编译器，这样有时候可能找不到系统头文件，或者不知道怎么配置其它参数，而只有Clang驱动器知道这些。另一方面，编译器可能设置独有的开发者选项，以让我们能够调试程序，看到内部发生的事情。让我们检验如何用两种方法检查一个源代码文件。
-Compiler clang –cc1 –analyze –analyzer-checker=<package> <file>
-Driver clang --analyze -Xanalyzer -analyzerchecker=<package> <file>
-　　我们用<file>表示你想要分析的源代码文件，而<package>标签让你能够选择一批具体的头文件。
-　　当使用驱动器时，注意--analyze参数会触发静态分析器。然而，-Xanalyzer参数将下一个参数直接发送给编译器，让你能够设置具体的参数。由于驱动器是中介人，在整个示例过程中，我们将直接使用编译器。此外，在我们的简单的例子中，直接使用编译器应该满足需求了。如果你感觉你需要驱动器以官方的方式使用检查器，记得使用驱动器，并首先输入-Xanalyzer选项，后面跟着我们送给编译器的每个参数。
-了解可用的检查器
-　　检查器是静态分析器能够在你的代码上执行的单个分析单元。静态分析器允许你选择适合你的需求的检查器的任意子集，或者全部开启它们。
-　　如果你没有安装Clang，请看第1章（编译和安装LLVM）的安装说明。要想得到已安装的检查器的列表，运行下面的命令：
-$ clang -cc1 -analyzer-checker-help
-　　它将打印已安装的检查器的长长的列表，显示所有你可以从Clang得到的即开即用的分析。现在让我们看看-analyzer-checker-help命令的输出：
-OVERVIEW: Clang Static Analyzer Checkers List
-USAGE: -analyzer-checker <CHECKER or PACKAGE,...>
-CHECKERS:
-alpha.core.BoolAssignment Warn about assigning non-{0,1} values
-to Boolean variables
-　　检查器的名字服从规范的<package>.<subpackage>.<checker>形式，为使用者提供一种简单的方法以只运行一组特定的相关检查器。
-　　在下面的表中，我们列出了最重要的package，以及每个package的检查器例子的列表。
-package名字
-内容
-例子
-alpha
-目前在开发的检查器
-alpha.core.BoolAssignment,
-alpha.security.MallocOverflow,
-alpha.unix.cstring.
-NotNullTerminated
-core
-普遍的上下文中适用的基本检查器
-core.NullDereference,
-core.DivideZero, and core.StackAddressEscape
-cplusplus
-单个C++内存分配检查器（目前其它的在alpha中）
-cplusplus.NewDelete
-debug
-输出静态分析器的调试信息的检查器
-debug.DumpCFG, debug.DumpDominators, debug.ViewExplodedGraph
-llvm
-单个检查器检查代码是否遵循LLVM编码惯例
-llvm.Conventions
-osx
-检查器专门用于为Mac OS X开发的程序
-osx.API, osx.cocoa.ClassRelease, osx.cocoa.NonNilReturnValue, osx.coreFoundation.CFError
-security
-检查引入安全脆弱性的代码
-security.FloatLoopCounter,
-security.insecureAPI.
-UncheckedReturn, security.
-insecureAPI.gets, security.
-insecureAPI.strcpy
-unix
-检查器专门用于为UNIX系统开发的程序
-unix.API, unix.Malloc, unix.
-MallocSizeof, unix.
-MismatchedDeallocator
-
-　　让我们运行Joe的代码，它用于愚弄大多数编译器所用的简单分析器。首先，我们试试经典的警告方法。为此，我们简单地运行Clang驱动器，让它不进行编译，只执行语法检查：
-$ clang -fsyntax-only joe.c
-　　选项syntax-only，用于打印警告，检查语法错误，但是它没有检测到任何问题。现在，是时候测试符号化执行引擎是怎么应付的：
-$ clang -cc1 -analyze -analyzer-checker=core joe.c
-　　可选地，如果前面的命令行要求你指定头文件位置，就使用驱动器，如下：
-$ clang --analyze –Xanalyzer –analyzer-checker=core joe.c
-./joe.c:10:5: warning: Function call argument is an uninitialized value
-printf("%d", schroedinger_integer);
-^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-1 warning generated.
-　　就在当场！记住，analyzer-checker选项期待检查器的全称，或者检查器的整个package的名字。我们选择使用了core检查器的整个package，但是我们可以只用具体的检查器core.CallAndMessage，它检查函数调用的参数。
-　　注意，所有静态分析器命令都以clang -cc1 -analyzer开始；因此，如果你想知道分析器支持的所有命令，可以用下面的命令：
-$ clang -cc1 -help | grep analyzer
-在Xcode IDE中使用静态分析器
-　　如果你使用Apple Xcode IDE，你可以从其中使用静态分析器。首先你需要打开一个项目，在Product菜单中选择菜单项Analyze。你将看到，Clang静态分析器给出了漏洞发生的确切路径，让IDE能够为程序员将它高亮出来，如下面的截屏所示：
-
-　　分析器能够以plist格式导出信息，然后Xcode解释此信息，并以用户友好的方式将它显示出来。
-在HTML中生成图形化报告
-　　静态分析器还能够导出一个HTML文件，它图形化地指出代码中表现处危险行为的程序路径，如同Xcode所用的方式。我们还用参数-o指定一个文件夹名字，指示报告存储的地方。例如，看下面的命令行：
-$ clang -cc1 -analyze -analyzer-checker=core joe.c -o report
-　　可选地，你可以调用驱动器，如下：
-$ clang --analyze –Xanalyzer –analyzer-checker=core joe.c –o report
-　　根据这个命令行，分析器将处理joe.c，并生成一个与Xcode中所看到的类似的报告，HTML文件，放置在report文件夹中。命令完成之后，查看此文件夹并打开HTML文件，以阅读漏洞报告。你应该看到一个类似于如下截图的报告：
-.
-处理大型项目
-　　如果你想用静态分析器检查一个大型项目，你大概不愿意写一个Makefile或者bash脚本，对项目的每个源文件调用分析器。静态分析器为此给出了一个便利的工具，称为scan-build。
-　　scan-build替换CC或CXX环境变量，它们定义了C/C++编译器命令，如此就介入了项目常规的build过程。它在编译之前分析每个文件，然后编译它，使得build过程或脚本能够如期望的那样继续工作。最终，它会生成HTML报告，你可以在浏览器中查看之。基本的命令行结构是很简单的：
-$ scan-build <your build command
-　　你可以自由地在scan-build之后运行任意的build命令，例如make。要想build Joe的程序，举例来说，我们不需要Makefile，可以直接提供编译命令：
-$ scan-build gcc -c joe.c -o joe.o
-　　它完成之后，你可以运行scan-view以查看漏洞报告：
-$ scan-view <output directory given by scan-build>
-　　scan-build所打印的最后一行，给出了运行scan-view所需要的参数。它会引用一个临时文件夹，那里存放着所有生成的报告。你应该看到一个格式优美的网页，列出了每个源文件的错误报告，如下面的截屏所示：
-
-真实世界的例子——找到Apache的漏洞
-　　在此例中，我们将检验在大型项目中检查漏洞是何等容易。为此，在http://httpd.apache.org/download.cgi下载最新的Apache HTTP Server源代码包。在写作的时候，它的版本是2.4.9。在我们的例子中，我们将通过控制台下载它，并在当前文件夹解压文件：
-$ wget http://archive.apache.org/dist/httpd/httpd-2.4.9.tar.bz2
-$ tar -xjvf httpd-2.4.9.tar.bz2
-　　我们将利用scan-build检查这个源代码库。为此，我们需要重复生成build脚本的步骤。注意，你需要所有必需的依赖库，以编译Apache项目。确认已经有了所有依赖库之后，执行下面的命令序列：
-$ mkdir obj
-$ cd obj
-$ scan-build ../httpd-2.4.9/configure -prefix=$(pwd)/../install
-　　我们用prefix参数指示这个项目新的安装路径，如此就不需要这台机器的管理员权限了。不过，如果你不打算实际安装Apache，就不需要提供额外的参数，只要你不运行make install。在我们的例子中，我们将安装路径定义为文件夹install，它将在我们下载压缩源文件的相同目录中被创建。注意，我们还在命令前面加上scan-build，它会覆写CC和CXX环境变量。
-　　在configure脚本创建所有Makefile之后，就是启动实际的build过程的时候了。我们用scan-build拦截make命令，而不是单独执行它：
-$ scan-build make
-　　由于Apache代码非常多，完成分析花了几分钟，找到了82个漏洞。下面是scan-view报告的一个例子：
-
-　　
-　　在臭名昭著的心脏击穿漏洞击中了所有OpenSSL实现之后——这个问题引起了极大的关注——有趣的是，我们看到静态分析器仍然能够在Apache SSL的实现文件modules/ssl/ssl_util.c和modules/ssl/ssl_engine_config.c中找到六个疑似漏洞。请注意这些点可能存在于实践中从未被执行的路径内，可能不是真正的漏洞，因为静态分析器工作在一个有限的强度范围，为了在可接受的时间帧内完成分析。因此，我们没有断言它们是真正的漏洞。我们只是在此给出了一个例子来说明一个赋值是废物或者未定义的情况。
-
-　　在这个例子中，静态分析器向我们表明，有一个执行路径最后给dc->nVerifyClient赋了一个未定义的值。这个路径的部分经历了对ssl_cmd_verify_parse()函数的调用，这显示出分析器在一个相同的编译模块内检查复杂的函数间路径的能力。在这个辅助函数中，静态分析器显示了在一个路径中mode没有被赋以任何值，因而它是未初始化的。
-之所以这可能不是一个真正的漏洞，是因为ssl_cmd_verify_parse()的代码可能处理了输入cmd_parms的所有情况，这些情况在实际的程序中发生了（注意上下文依赖），在所有情况下正确地初始化了mode。scan-build所发现的是，这个模块在孤立状态下可能会执行有漏洞的路径，但是我们没有证据得知这个模块的使用者会用到有漏洞的输入。静态分析器不足够强大，无法在整个项目的上下文中分析这个模块，因为这样的分析需要花费不切实际的时间（记得算法的指数复杂度）。
-　　这个路径有11步，而我们在Apache中发现的最长的路径有42步。这个路径出现在modules/generators/mod_cgid.c模块中，它违反了一个标准C API调用：它以一个null指针参数调用strlen()函数。
-　　如果你好奇到想看所有这些报告的细节，不要犹豫亲自运行命令。
-
-用你自己的检查器扩展静态分析器
-　　
-　　由于它的设计，我们可以轻易地以定制的检查器扩展静态分析器。记住静态分析器和它的检查器一样好，如果你想分析是否有代码以非预期的方式使用你的某个API，你需要学习如何将这个域特定的知识嵌入到Clang静态分析器中。
-
-熟悉项目的架构
-　　Clang静态分析器的源代码在llvm/tools/clang中。头文件在include/clang/StaticAnalyzer中，源代码在lib/StaticAnalyzer中。查看文件夹的内容，你会发现项目被划分为三个不同的子文件夹：Checkers，Core，和Frontend。
-　　Core的任务是在源代码层次模拟程序的执行，利用一个visitor pattern，并在每个程序点（在重要的语句之前或之后）调用注册的检查器，以强制一个给定的不变量。例如，如果你的检查器确认同一分配的内存区域不会被释放两次，它会观察malloc()和free()，当它检测到重复释放时会生成一个漏洞报告。
-　　符号引擎不能以精确的程序值模拟程序，如你在一个程序运行时看到的值。如果你让使用者输入一个整数值，你肯定会知道，在一次给定的运行中，举例来说，这个值是5。符号引擎的威力在于对程序的每个可能的结果推断发生了什么，为了完成这个宏伟的目标，它考察符号（SVals）而不是具体的值。一个符号可能代表任意的整数、浮点数或者甚至一个完全未知的数。它对值知道得越多，它就越强大。
-　　有三个重要得数据结构：ProgramState，ProgramPoint，和ExplodedGraph；它们是理解项目实现的钥匙。第一个代表当前执行的关于当前状态的上下文。例如，当分析Joe的代码时，它会注明某个给定的变量的数值是5。第二个代表程序流中的一个具体的点，在一个语句的前面或者后面，例如，在给一个整数变量赋值5的后面。最后一个代表整个可达程序状态的图。另外，这个图的节点由ProgramState和ProgramPoint的元组表示的，这意味着，每个程序点都有一个具体的状态和它相关联。例如，给一个整数变量赋值5之后的点，由一个状态将这个变量和数字5联系起来。
-　　正如本章的开头已经指出的那样，ExplodedGraph，或者说，可达状态图，表示对经典CFG的一个重要的展开。注意，一个具有两个串联的而不是嵌套的if的小的CFG，在可达状态图的表示中，会爆炸成四个不同的路径——组合的扩展。为了节省空间，这个图会被折叠，这意味着，如果你创建一个节点，它表示的程序点以及状态和另一个节点的相同，就不会分配新的节点，而是重用这个已有的节点，可能建造回路。为了实现这个行为，ExplodedNode继承了LLVM库的超类llvm::FoldingSetNode。LLVM库已经为这种情形引入了一个公共的类，因为在表示程序时，折叠在编译器的中间端和后端中被广泛使用。
-　　静态分析器的总体设计可以被划分成以下部分：引擎，它跟随仿真路径并管理其它组件；状态管理器，管理ProgramState对象；约束管理器，负责推断由跟随给定程序路径引起的对ProgramState的约束；以及存储管理器，管理程序存储模型。
-　　分析器的另一个重要的方面是，如何建模内存的行为，当它沿着每条路径模拟程序的执行时。对于如C和C++这样的语言，这是相当具有挑战的，因为它们为程序员提供了多种访问相同内存片段的方式，从而产生别名。
-　　分析器实现了一种由Xu等人的论文所描述的区域内存模型（查看本章末尾的引用），它甚至能够区分一个数组的每个元素的状态。Xu等人提出了一种内存区域的层级结构，在其中，举例来说，数组元素是数组的子区域，数组是堆栈的子区域。C中的每个lvalue，或者换句话说，每个变量或者引用，有一个对应的区域建模了它们所作用的内存片段。另一方面，每个内存区域的内容，是通过绑定建模的。每个绑定将一个符号值和一个内存区域关联起来。这里有太多的信息需要吸收，所以让我们以一种可能的最佳方式消化它——编写代码。
-
-编写你自己的检查器
-　　考虑你在开发一个特定的嵌入式软件，它控制着一个核反应堆，依靠具有两个基本调用的API：turnReactorOn()和SCRAM()（关闭核反应堆）。核反应堆包含燃料和控制杆，前者是核反应发生的地方，后者包含中子吸收器，它能减缓核反应，使核反应堆保持发电厂的规模，而不是变成原子弹。
-　　你的客户告知你，调用SCRAM()两次可能导致控制杆被卡住，调用turnReactorOn()两次会导致核反应失去控制。这个API具有严格的使用规则，你的任务是，在代码成为产品之前，审查一个大型的代码库，确保它没有违反这些规则：
-* 不存在代码路径在不介入turnReactorOn()的情况下调用SCRAM()超过一次
-* 不存在代码路径在不介入SCRAM()的情况下调用trunRactionOn()超过一次
-　　作为一个例子，考虑下面的代码：
-　　int SCRAM();
-　　int turnRactionOn();
-　　
-　　void test_loop(int wrongTemperature, int restart) {
-　　  turnRactionOn();
-　　  if (wrongTemperature) {
-　　    SCRAM();
-　　  }
-　　  if (restart) {
-　　    SCRAM();
-　　  }
-　　  turnReactorOn();
-　　  // code to keep the reactor working
-　　  SCRAM();
-　　}
-　　如果wrongTemperature和restart都不是0，这份代码违反了API，导致调用SCRAM()两次，其间没有介入trunReactorOn()。如果这两个参数都是0，它也违反了API，因为这样的话，代码会调用turnReactorOn()两次，其间没有介入SCRAM()调用。
-
-以定制的检查器解决问题
-　　你要么可以尝试用肉眼检查代码，这是非常枯燥并且易出错的，要么使用一个像Clang静态分析器这样的工具。问题在于，它不理解核电厂API。我们将通过实现一个特殊的检查器客服它。
-　　第一步，我们要为我们的状态模型建立概念，关于我们想要在不同程序状态间传播的信息。在这个问题中，我们关切反应堆是开启的还是关闭的。我们可能不知道它是开启的还是关闭的；因此，我们的状态模型包含三个可能的状态：未知，开启，和关闭。
-　　现在，关于我们的检查器如何处理状态，我们有一个优雅的主意。
-
-编写状态类
-　　让我们付诸实践。我们的代码将会以SimpleStreamChecker.cpp为基础，这是Clang代码树中可找到的一个简单的检查器。
-　　在lib/StaticAnalyzer/Checkers中，我们应该创建一个新的文件，ReactorChecker.cpp，并开始编写我们自己的类，这个类表示我们在跟踪的时候所关心的状态：
-#include "ClangSACheckers.h"
-#include "clang/StaticAnalyzer/Core/BugReporter/BugType.h"
-#include "clang/StaticAnalyzer/Core/Checker.h"
-#include "clang/StaticAnalyzer/Core/PathSensitive/CallEvent.h"
-#include "clang/StaticAnalyzer/Core/PathSensitive/CheckerContext.h"
-using namespace clang;
-using namespace ento;
-class ReactorState {
-private:
-  enum Kind {On, Off} K;
-public:
-  ReactorState(unsigned Ink) : K((Kind) InK) {}
-  bool isOn() const { return K == On; }
-  bool isOff() const { return K == Off; }
-  static unsigned getOn() { return (unsigned) On; }
-  static unsigned getOff() { return (unsigned) Off; }
-  bool operator == (const ReactorState &X) const {
-　　return K == X.K;
-  }
-  void Profile(llvm::FoldingSetNodeID &ID) const {
-　　ID.AddInteger(K);
-  }
-};
-　　我们的类的数据部分限制为Kind的单个实例。注意ProgramState类会管理我们编写的状态信息。
-
-理解ProgramState的不变性
-　　关于ProgramState的一个有趣的经验是，它生来就是不可变的。一旦建造出来，它就应该绝不改变：它代表在一个给定的执行路径中的一个给定的程序点的被计算出来的状态。不同于处理CFG的数据流分析，在这种情况下，我们处理可达程序状态图，对于不同的一对程序点和状态，它都有不同的节点。以这种方式，如果程序发生循环，引擎会创建一个完全新的路径，这个路径记录了关于这次新的迭代的关联信息。相反地，在数据流分析中，一个循环会导致循环体的状态被新的信息更新，直到到达一个固定的点。
-　　然而，正如之前强调的那样，一旦符号引擎到达一个表示一个给定循环体的相同程序点的节点，这个点具有相同的状态，它会认为在这个路径中没有新的信息需要处理，就重用这个节点而不是新建一个。另一方面，如果你的循环有一个循环体在不断地以新的信息更新状态，你就很快会达到符号引擎的限度：它会在模拟预定数目的迭代后放弃这个路径，这是一个可配置的数目，你可以在启动这个工具时设置它。
-
-剖析代码
-　　由于状态一旦创建就不可变，我们的ReactorState类不需要setter，或者用于修改其状态的类成员函数，但是我们确实需要构造器。这就是ReactorState(unsigned InK)构造器的目的，它接受一个编码当前反应器状态的整数作为输入。
-　　最后，Profile函数是ExplodeNode的结果，它是FoldingSetNode的子类。所有子类必须提供这样的方法，以协助LLVM折叠追踪节点的状态并判断两个节点是否相同（这时它们会被折叠）。因此，我们的Profile函数会说明K，一个数字，给出我们的状态。
-　　你可以用任何以Add开头的FoldingSetNodeID成员函数来告知独特的位，这些位用于识别这个对象的实例（查看llvm/ADT/FoldingSet.h）。在我们的例子中，我用了AddInteger()。
-
-定义检查器子类
-　　现在，是时候声明我们的Checker子类了：
-class ReactorChecker : public Checker<check::PostCall> { 
-  mutable IdentifierInfo *IIturnReactorOn, *IISCRAM; 
-  OwningPtr<BugType> DoubleSCRAMBugType; 
-  OwningPtr<BugType> DoubleONBugType; 
-  void initIdentifierInfo(ASTContext &Ctx) const; 
-  void reportDoubleSCRAM(const CallEvent &Call, CheckerContext &C) const; 
-  void reportDoubleON(const CallEvent &Call, CheckerContext &C) const; 
-public: 
-  ReactorChecker(); 
-  /// Process turnReactorOn and SCRAM 
-  void checkPostCall(const CallEvent &Call, CheckerContext &C) const; 
-};
-　　
-注意Clang版本——从Clang 3.5开始，OwingPtr<>模板被淘汰，而采用标准的C++ std::unique_ptr<>模板。这两个模板都提供了智能指针的实现。
-　　
-　　我们的类的第一行表明，它是一个指定了模板参数的Checker的子类。对于这个类，可以使用多个模板参数，它们表示你的检查器在巡查时所感兴趣的程序点。技术上来说，这些模板参数用于派生一个定制的Checker类，这个类是所有被指定为参数的类的子类。这意味着，对于我们的案例，我们的检查器会从基类继承PostCall。如此继承是用于实现巡查模式，它只会针对我们感兴趣的对象调用我们，因此，我们的类必须实现成员函数checkPostCall。
-　　你也许对登记你的检查器感兴趣，以巡查广泛多样的程序点类型（检查CheckerDocumentation.cpp）。在我们的案例中，我们关注在调用到达之后立即访问程序点，因为我们想在某个核电厂API函数被调用之后，记录状态的改变。
-　　这些成员函数使用了const关键字，这遵从其设计，它依赖无状态的检查器。然而，我们确实想贮存获取IdendifierInfo对象的结果，它们代表符号turnReactorOn()和SCRAM()。这样，我们使用mutable关键字，创建它以绕过const的限制。
-　　
-谨慎使用mutable关键字。我们不是在损害检查器的设计，因为我们只是贮存结果以加速第二次调用到达我们的检查器之后的计算，但是概念上我们的检查器仍然是无状态的。mutable关键字应该只用于互斥或者像这样的贮存的场景。
-　　
-　　我们还想告知Clang基础设施，我们在处理一种新的漏洞类型。为此，我们必须保存新的BugType实例，新的漏洞各保存一个，我们打算报告这些漏洞：漏洞发生在程序员调用SCRAM()两次，以及发生在程序员调用turnReactorOn()两次。我们还用OwningPtr LLVM类封装我们的对象，它是一种自动指针的实现，用于自动地释放我们的对象，一旦我们的ReactorChecker对象被销毁。
-　　你应该封装我们刚编写的两个类，ReactorState和ReactorChecker，封装在一个匿名名字空间中。这会阻止我们的链接器导出这两个数据结构，我们知道它们只在本地使用。
-
-编写寄存器宏
-　　在深入学习类的实现之前，我们必须调用一个宏来展开ProgramState实例，分析器引擎用它处理我们定制的状态：
-　　REGISTER_MAP_WITH_PROGRAMSTATE(RS, int, ReactorState)
-　　注意，这个宏的末尾没有分号。这为每个ProgramState实例关联一个新的map。第一个参数可以是任意名字，此后你将用它引用这个数据，第二个参数是map键值的类型，第三个参数是我们要存储的对象的类型（此处它是ReactorState类）。
-　　检查器常常用map存储它们的状态，因为给特定的资源关联新的状态是常见的，例如，在本章开头的检测器中，每个变量的状态，初始化的或未初始化的。在这种情况下，map的键值会是变量的名字，存储的值会是一个定制的类，这个类建模了状态的未初始化或初始化。对于另外的向程序状态登记信息的方式，查看CheckerContext.h中的宏定义。
-　　注意，我们并不真正地需要一个map，因为我们会总是为每个程序点只存储一个状态。因此，我们会总是用键值1访问我们的map。
-
-实现检查器子类
-　　我们的检查器类的构造器实现如下：
-　　ReactorChecker::ReactorChecker() : IIturnReactorOn(0), IISCRAM(0) {
-　　  // Initialize the bug types.
-　　  DoubleSCRAMBugType.reset(new BugType(“Double SCRAM”, “Nuclear Reactor API Error”));
-　　  DoubleONBugType.reset(new BugType(“Double ON”, “Nuclear Reactor API Error”));
-　　}
-　　
-注意Clang版本——从Clang 3.5开始，我们的BugType构造器调用需要变为BugType(this, (“Double SCRAM”, “Nuclear Reactor API Error”)和BugType(this, “Double ON”, “Nuclear Reactor API Error”)，就是添加this关键字作为第一个参数。
-　　我们的构造器实例化了一个新的BugType对象，利用OwningPtr的reset()成员函数，我们给出了关于新的漏洞种类的描述。我们还初始化了IdentifierInfo指针。接着，是时候定义我们的辅助函数以贮存这些指针的结果：
-void ReactorChecker::initIdentifierInfo(ASTContext &Ctx) const {
-  if (IIturnReactorOn)
-    return;
-  IIturnReactorOn = &Ctx.Idents.get("turnReactorOn");
-  IISCRAM = &Ctx.Idents.get("SCRAM");
-}
-　　
-　　ASTContext对象保存了特定的AST节点，这些节点包含用户程序用到的类型和声明，我们可以用它找到我们在监听时所感兴趣的函数的准确的标识符。现在，我们实现巡查器模式函数，checkPostCall。记住，它是一个const函数，应该不修改检查器的状态：
-void ReactorChecker::checkPostCall(const CallEvent &Call,
-                              CheckerContext &C) const {
-  initIdentifierInfo(C.getASTContext());
-  if (!Call.isGlobalCFunction())
-    return;
-  if (Call.getCalleeIdentifier() == IIturnReactorOn) {
-    ProgramStateRef State = C.getState();
-    const ReactorState *S = State->get<RS>(1);
-    if (S && S->isOn()) {
-      reportDoubleON(Call, C);
-      return;
-    }
-    State = State->set<RS>(1, ReactorState::getOn());
-    C.addTransition(State);
-    return;
-  }
-  if (Call.getCalleeIdentifier() == IISCRAM) {
-    ProgramStateRef State = C.getState();
-    const ReactorState *S = State->get<RS>(1);
-    if (S && S->isOff()) {
-      reportDoubleSCRAM(Call, C);
-      return;
-    }
-    State = State->set<RS>(1, ReactorState::getOff());
-    C.addTransition(State);
-    return;
-  }
-}
-　　第一个参数是CallEvent类型，它持有一个函数的信息，程序就在这个程序点之前调用了这个函数（查看CallEvent.h），因为我们登记了一个调用后巡查器。第二个参数是CheckerContext类型，它是在这个程序点的当前状态的唯一信息来源，因为我们的检查器必须是无状态的。我们用它获取ASTContext，初始化Identifier对象，检查我们监听的函数有赖于它们。我们询问CallEvent对象，以检查它是否调用了trunReactorOn()函数。如果是，我们需要进行状态转移，转移到开启状态。
-　　在转移状态之前，我们首先检查状态是否已经是开启的，在这种情况下，就存在漏洞。注意在State->get<RS>(1)语句中，RS只是我们在登记程序状态的新特征时所给的名字，1是固定的整数，总是用它访问map的位置。虽然在这种情况下我们实际上不需要map，但是通过使用map，你将能够轻松地扩展我们的检查器以监听更加复杂的多个状态，如果你想的话。
-　　我们将我们存储的状态恢复为一个const指针，因为我们在处理的到达这个程序点的信息是不可变的。首先，有必要检查它是否为空的引用，这表示我们不知道反应堆是开启的还是关闭的。如果它不是空的，我们检查它是否为开启的，为阳性的状况，我们就放弃进一步的分析而报告一个漏洞。对于其它情况，我们通过ProgramStateRef set成员函数新建一个状态，并将这个新的状态传送给addTransition()成员函数，它会记录信息以在ExplodedGraph中创建一条新的边。只有在状态实际改变时，才会创建这样的边。在处理SCRAM的时候，我们用了类似的逻辑。
-　　漏洞报告成员函数的代码如下所示：
-void ReactorChecker::reportDoubleON(const CallEvent &Call,
-                                CheckerContext &C) const {
-  ExplodedNode *ErrNode = C.generateSink();
-  if (!ErrNode)
-    return;
-  BugReport *R = new BugReport(*DoubleONBugType,
-    "Turned on the reactor two times", ErrNode);
-  R->addRange(Call.getSourceRange());
-  C.emitReport(R);
-}
-void ReactorChecker::reportDoubleSCRAM(const CallEvent &Call,
-                                    CheckerContext &C) const {
-  ExplodedNode *ErrNode = C.generateSink();
-  if (!ErrNode)
-    return;
-  BugReport *R = new BugReport(*DoubleSCRAMBugType,
-    "Called a SCRAM procedure twice", ErrNode);
-  R->addRange(Call.getSourceRange());
-  C.emitReport(R);
-}
-　　我们的第一个动作是生成一个sink节点，在可达程序状态中，它意味着我们在这个路径上遇到一个严重的漏洞，我们不想继续分析这个路径。下面几行创建一个BugReport对象，报告我们找到了一个新的漏洞，漏洞的类型是DoubleOnBugType，漏洞描述可以任意写，提供我们刚刚建造的出错节点。我们还用到了addRange()成员函数，它会高亮出现漏洞的代码，显示给用户。
-
-添加登记代码
-　　为了让静态分析器工具认出我们的新检查器，我们需要在我们的源代码中定义一个登记函数，然后在一个TableGen文件中添加我们的检查器的描述。登记函数如下所示：
-　　void ento::registerReactorChecker(CheckerManager &mgr) {
-　　  mgr.registerChecker<ReactorChecker>();
-　　}
-　　
-　　TableGen文件有一个检查器的表。它位于lib/StaticAnalyzer/Checkers/Checkers.td，相对于Clang源代码文件夹。在编辑这个文件之前，我们需要选择一个包以放置我们的检查器。我们会把它放在alpha.powerplant中。这个包还不存在，因此我们要创建它。打开Checkers.td，在所有已存在的包定义之后添加一个新的定义：
-　　def  PowerPlantAlpha : Package<”powerplant”>, InPackage<Alpha>;
-　　
-　　下面，添加我们新写的检查器：
-　　let ParentPackage = PowerPlantAlpha in {
-　　
-　　def ReactorChecker : Checker<”ReactorChecker”>,
-　　  HelperText<”Check for misuses of the nuclear power plant API”>,
-　　  DescFile<”ReactorChecker.cpp”>;
-　　
-　　} // end “alpha.powerplant”
-　　
-　　如果你用CMake build Clang，你应该将你的新源文件添加到lib/StaticAnalyzer/Checkers/CMakeLists.txt。如果你用GNU自动工具配置脚本以build Clang，你就不需要修改任何其它文件，因为LLVM Makefile会扫描Checkers文件夹中的新源代码文件，并在静态分析器的检查器库中链接它们。
-
-编译和测试
-　　进入你build LLVM和Clang的文件夹，运行make。现在build系统会检测到你的新代码，build它，并向Clang静态分析器链接它。当你完成build之后，命令行clang -cc1 -analyzer-checker-help就应该列出我们的新检查器为一个合法的选项。
-　　下面给出了一个我们的检查器的测试案例，managereactor.c（和前面给出的相同）：
-    int SCRAM();
-    int turnReactorOn();
-
-    void test_loop(int wrongTemperature, int restart) {
-      turnReactorOn();
-      if (wrongTemperature) {
-        SCRAM();
-      }
-      if (restart) {
-        SCRAM();
-      }
-      turnReactorOn();
-      // code to keep the reactor working
-      SCRAM();
-    }
-
-　　要用我们的新检查器分析以上代码，我们使用下面的命令：
-　　$ clang –analyze -Xanalyzer -analyzer-check=alpha.powerplant mamagereactor.c
-　　
-　　检查器会显示它能发现为错误的路径并退出。如果你请求一个HTML报告，你就会看到一个漏洞报告，类似下面的截屏所示：
-
-　　现在你的任务完成了：你成功地开发了一个程序来自动检查对一个特定的路径敏感的API的违规。如果你愿意，你可以查看其它检查器的实现，学习更多处理更复杂场景的知识，或者查看下一节列出的资源以获得更多信息。
-
-更多资源
-　　你可以查看下面的资源以了解更多的项目和其它的信息：
-* http://clang-analyzer.llvm.org：Clang静态分析器项目的网页。
-* http://clang-analyzer.llvm.org/checker_dev_manual.html：为想要开发新的检查器的人准备的有用的手册。
-* http://lcs.ios.ac.cn/~xzx/memmodel.pdf：论文A Memory Model for Static Analysis of C，作者Zhongxing Xu, Ted Kremenek, Jian Zhang。它从理论层面详细解释了分析器核心所实现的内存模型。
-* http://clang.llvm.org/doxygen/annotated.html：Clang doxygen文档。
-* http://llvm.org/devmtg/2012-11/videos/Zaks-Rose-Checker24Hours.mp4：由Anna Zaks和Jordan Rose在2012 LLVM开发者会议上作的一个讲座，解释如何快速建造检查器，他们是分析器开发者。
+我们看到，我们的Pass恰好被安排在SPARC Delay Slot Filler之后，在Sparc Assembly Printer之前，后者是代码生成发生的地方。
 
 总结
-　　在本章中，我们探讨了Clang静态分析器如何不同于运行在编译器前端的简单漏洞检测工具。我们以例子说明了静态分析器是更精确的，解释了在精确性和计算时间之间的权衡，需要指数级时间的静态分析算法是不适合集成到常规的编译器管线的，因为它完成分析所需的时间是不可接受的。我们还介绍了如何用命令行接口对简单项目运行静态分析器，以及用辅助工具scan-build来分析大型的项目。最后我们介绍了如何用我们自己的路径敏感的漏洞检查器扩展静态分析器。
-　　在下一章，我们将介绍建造在LibTooling基础之上的Clang工具，它简化了建造代码重构工具的过程。
+*******************************
 
-第10章 Clang工具和LibTooling
-############################
+在这一章中，我们概要地介绍了LLVM后端是如何工作的。我们看到了不同的代码生成阶段，以及在编译过程中变化的内部指令表示。我们讨论了指令选择、调度、寄存器分配、代码生成，为读者演示了用LLVM工具对这些阶段做实验的方法。在本章结束的时候，你应该能够读懂llc -debug的输出，它打印出后端活动的详细的日志，展示了发生在后端内部的一切事情的全貌。如果你有兴趣编写自己的后端，你的下一步就是参考官方的教程：http://llvm.org/docs/WritingAnLLVMBackend.html。如果你有兴趣阅读更多的关于后端设计的内容，你应该参考http://llvm.org/docs/CodeGenerator.html。
 
-在这一章，我们将看到有多少工具以库的形式利用Clang前端，为了不同的目的而操作C/C++程序。特别地，它们都依赖LibTooling，一个Clang库，它使人们可以编写独立的工具。在这种情况下，你可以设计一个完全属于你自己的工具，利用Clang的解析能力，让你的用户可以直接调用你的工具，而不是编写一个插件以适应Clang编译管线。这一章所展示的工具可以在Clang额外工具包中找到；参考第2章（外部项目）获得如何安装它们的信息。我们将以一个可用的例子结束这一章，演示如何创建你自己的代码重构工具。我们将介绍下面的内容：
-* 生成编译命令数据库
-* 理解并使用若干Clang工具，它们依赖LibTooling，例如Clang Tidy、Clang Modernizer、Clang Apply Replacements、ClangFormat、Modularize、PPTrace、和Clang Query
-* 建造你自己的基于LibTooling的代码重构工具
-生成编译命令数据库
-一般来说，编译器被build脚本调用，例如Makefile，用一系列参数配置它，使之恰当地使用项目头文件和定义。这些参数让前端能够正确地分词和解析输入的源代码文件。然而，在这一章，我们将学习独立工具，它们将独立运行，而不是作为Clang编译管线的一部分。因此，理论上，我们会需要一个具体的脚本，以正确的参数对每个源代码文件运行我们的工具。举例来说，下面的命令显示了Make所用的完整的命令行，它调用编译器以build来自LLVM库的一个典型的文件：
-$ /usr/bin/c++ -DNDEBUG -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS
--D__STDC_LIMIT_MACROS -fPIC -fvisibility-inlines-hidden -Wall -W -Wnounused-
-parameter -Wwrite-strings -Wmissing-field-initializers -pedantic
--Wno-long-long -Wcovered-switch-default -Wnon-virtual-dtor -fno-rtti
--I/Users/user/p/llvm/llvm-3.4/cmake-scripts/utils/TableGen -I/Users/
-user/p/llvm/llvm-3.4/llvm/utils/TableGen -I/Users/user/p/llvm/llvm-3.4/
-cmake-scripts/include -I/Users/user/p/llvm/llvm-3.4/llvm/include -fnoexceptions
--o CMakeFiles/llvm-tblgen.dir/DAGISelMatcher.cpp.o -c /Users/
-user/p/llvm/llvm-3.4/llvm/utils/TableGen/DAGISelMatcher.cpp
-当你在使用这个库，你会相当不开心，如果你不得不输入如此长的命令，它占据终端10行，以分析每个源代码文件，不能丢弃一个字符，因为前端将使用此信息的全部。
-为了让工具易于处理源代码文件，任意使用LibTooling的项目都接受命令数据库作为输入。这个命令数据库为一个具体项目的每个源文件设置正确的编译器参数。为了让事情变得更容易，如果以-DCMAKE_EXPORT_COMPILE_COMMANDS参数调用CMake，它就会为你生成这个数据库文件。举例来说，假设你期望对来自Apache项目的一个具体源代码文件运行基于LibTooling的工具。为了让你无需输入准确的编译器参数以正确地解析这个文件，你可以用CMake生成一个命令数据库，如下所示：
-$ cd httpd-2.4.9
-$ mkdir obj
-$ cd obj
-$ cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON ../
-$ ln -s $(pwd)/compile_commands.json ../
-这和你用CMake build Apache所用的build命令类似，但是并不实际build它，-DCMAKE_EXPORT_COMPILE_COMMANDS=ON参数指示CMake用编译器参数生成一个JSON文件，它将会用这些参数去编译每个Apache源文件。我们需要创建一个链接到这个JSON文件，让它出现在Apache源代码的根目录中。然后，当我们运行任何LibTooling程序去解析一个Apache源文件的时候，它将搜索父目录直到在其中找到compile_commands.json，以得到恰当的参数去解析这个文件。
-可选地，如果你不想在运行你的工具之前build编译命令数据库，你可以用双短线（--）直接传递编译器命令，你将会用它处理这个文件。当你的项目不需要很多参数来编译时，这是有用的。举例来说，看下面的命令行：
-$ my_libtooling_tool test.c -- -Iyour_include_dir -Dyour_define
-clang-tidy工具
-在这小节，我们将介绍clang-tidy，作为LibTooling工具的一个例子，解释如何使用它。所有其它Clang工具具有类似的样子和感觉，从而让你能够愉快地探索它们。
-clang-tidy是一个linter，基于Clang。一般来说，linter是一种分析代码的工具，它暴露不符合最优形式的代码。它可以检查具体的特征，例如：
-* 代码是否适应不同的编译器
-* 代码是否遵循特定的习语或编码惯例
-* 代码是否可能由于滥用语言特性而导致漏洞
-就clang-tidy的具体情况而言，这个工具能够运行两种类型的检测器：来自原始的Clang静态分析器的检查器和专门为clang-tidy编写的检查器。尽管能够运行静态分析器检查，注意clang-tidy和其它基于LibTooling的工具是基于源代码分析的，这和前面章节描述的复杂的静态分析引擎是相当不同的。这些检查只是遍历Clang AST，而不是模拟程序运行，它们也快得多。不同于Clang静态分析器的检查，为clang-tidy编写的检查一般以检查是否符合特定的编码惯例为目标。特别地，它们检查LLVM编码惯例和Google编码惯例，还有其它一般的检查。
-如果你遵循特定的编码惯例，你会发现clang-tidy非常有用，用它定期地检查你的代码。花点工夫，你甚至可以配置它，让它从一些文本编辑器里直接运行。但是，目前这个工具还未成熟，只实现了少量测试。
-利用clang-tidy检查你的代码
-在此例中，我们将演示如何用clang-tidy检查我们在第9章（Clang静态分析器）写的代码。我们为静态分析器写了一个插件，如果我们想把这个检查器提交到官方的Clang源代码树，我们需要严格地遵循LLVM编码惯例。是时候检查我们是否真的遵循它了。一般的clang-tidy命令行接口如下：
-$ clang-tidy [options] <source0> [... <sourceN>] [-- <compiler command>]
-你可以小心地通过-checks参数中的名字激活每个检查器，但是你也可以利用通配符*选择许多具有相同开始子字符串的检查器。当你需要关闭一个检查器，就用带短划线前缀的检查器名字。举例来说，如果你想运行所有属于LLVM编码惯例的检查器，就应该用下面的命令：
-$ clang-tidy -checks="llvm-*" file.cpp
-只有安装了Clang连同Clang额外工具代码仓库，所有本章中描述的工具才能运行，后者跟Clang树是分开的。如果你还没有安装clang-tidy，请阅读第2章（外部项目），了解如何编译并安装Clang外部工具。
-因为我们的代码是和Clang一起编译的，我们需要一个编译器数据库。我们将开始生成它。进入你的LLVM源代码所在的文件夹，用下面的命令创建一个兄弟文件夹以存放CMake文件：
-$ mkdir cmake-scripts
-$ cd cmake-scripts
-$ cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON ../llvm
-如果你遇到一个unknown-source-file的错误，指向前一章所创建的检查器的代码，你需要以你的检查器源文件的名字更新CMakeLists.txt文件。用下面的命令行编辑这个文件，然后再次运行CMake：
-$ vim ../llvm/tools/clang/lib/StaticAnalyzer/Checkers/CMakeLists.txt
-然后，在LLVM根文件夹中创建一个链接，指向编译器命令数据库文件。
-$ ln -s $(pwd)/compile_commands.json ../llvm
-现在，我们终于可以运行clang-tidy了：
-$ cd ../llvm/tools/clang/lib/StaticAnalyzer/Checkers
-$ clang-tidy -checks="llvm-*" ReactorChecker.cpp
-你应该看到许多关于我们的检查器所包含的头文件的抱怨，它们没有严格地遵循LLVM规则，它要求每个namespace结尾的大括号有注释（见http://llvm.org/docs/CodingStandards.html#namespace-indentation）。好消息是，我们工具的代码，包括头文件，没有违反这些规则。
-重构工具
-在这一小节，我们将介绍许多其它的工具，它们利用Clang的解析能力，执行代码分析和源到源的转换。以一种类似clang-tidy的方式使用它们，依靠你的命令数据库来简化用法，这会让你感到舒服。
-Clang Modernizer
-Clang Modernizer是一个革命性的独立工具，它帮助人们改写陈旧的C++代码以使用最新的标准，例如，C++11。它通过执行下面的变换以达到这个目标：
-* 循环转变变换：将陈旧的C-风格的for(;;)循环转变为更新的基于范围的for(auto Y...:..)形式的循环
-* 使用nullptr变换：将陈旧的C-风格的表示空指针的NULL或常数0转变为更新的nullptr C++11关键字
-* 使用auto变换：将一些类型声明在特定的情况下转变为使用auto关键字，这提高了代码可读性
-* 添加override变换：为重写基类函数的虚拟成员函数声明添加override修饰
-* 值转递变换：用值传递成语替换被复制的const引用
-* 替换auto_ptr变换：用std::unique_ptr替换已过时的std::auto_ptr
-源到源的变换工具利用了Clang LibTooling基础设施，Clang Modernizer是其中的一个引人入胜的例子。要想使用它，观察下面的模板：
-$ clang-modernize [<options>] <source0> [... <sourceN>] [-- <compiler command>]
-注意，如果你不提供任何额外的选项，除了源代码文件名，这个工具就会直接对源文件付诸全部变换。用参数-serialize-replacements强制将提议的补丁写到磁盘，这让你能够先阅读它们，再应用它们。有特别的工具可以应用在磁盘上的补丁，我们将在后面介绍它们。
-Clang Apply Replacements
-Clang Modernizer（之前的C++迁移器）的开发引发了讨论，关于如何协调对大型代码库的源到源的变换。例如，当分析不同的翻译单元时，同一个头文件可能被分析多次。
-处理这个问题的一个可选方法是，序列化替换提议，将它们写到文件。第二个工具将负责读入这些提议的文件，丢弃冲突的和重复的提议，并对源文件应用这些替换提议。这是Clang Apply Replacements的目的，它生来就是用于帮助Clang Modernizer修正大型的代码库的。
-Clang Modernizer和Clang Apply Replacements，前者产生替换提议，后者实施这些提议，它们都会利用clang::tooling::Replacement类的一个序列化版本。此序列化用到了YAML格式，它可以被定义为JSON的超集，易于人们阅读。
-代码版本工具所用的补丁文件，正好是一种修改提议的序列化格式，但是Clang开发者选择使用YAML，直接利用Replacement类的序列化，避免解析补丁文件。
-因此，Clang Apply Replacements工具不打算成为一个通用的代码补丁工具，而是一个专用的工具，致力于处理依赖于工具化API的Clang工具所作出的修改。注意，如果你在编写一个源到源的变换工具，只有当你希望协调多个修改提议以消除重复修改时，才需要使用Clang Apply Replacements工具。否则，你就直接简单地修改源文件。
-为了看清Clang Apply Replacements如何工作，我们首先需要使用Clang Modernizer，强制它序列化它的修改提议。假设我们想要转换下面的C++源文件，让它使用新的C++标准：
-int main() {
-const int size = 5;
-int arr[] = {1,2,3,4,5};
-for (int i = 0; i < size; ++i) {
-arr[i] += 5;
-}
-return 0;
-}
-根据Clang Modernizer的用户手册，转换这个循环让它使用新的auto迭代器是安全的。为此，我们需要使用Clang Modernizer的循环转换：
-$ clang-modernize -loop-convert -serialize-replacements test.cpp
---serialize-dir=./
-最后一个参数是可选的，它指定当前文件夹将用于存放替换文件。如果我们不指定它，这个工具会创建一个临时文件夹，让Clang Apply Replacements以后使用。由于我们将所有替换文件输出到当前文件夹，你可以直接分析生成的YAML文件。付诸实践，简单地运行clang-apply-replacements，以当前文件夹作为它唯一的参数：
-$ clang-apply-replacements ./
-运行这个命令之后，如果你得到这样的错误信息：”trouble iterating over directory ./: too many levels of symbolic links”，你可以通过使用/tmp作为存储替换文件的文件夹，重试最后两个命令。或者，你可以创建一个新的文件夹以存放这些文件，让你易于分析它们。
-不止于这个简单的例子，这些工具通常被设计成用于处理大型代码库。因此，Clang Apply Replacements不会问任何问题，只是直接开始解析所指定文件夹中存在的所有YAML文件，分析并实行转换。
-你甚至可以指定具体的编码标准，要求这个工具在编写新代码到源文件（打补丁）的时候必须遵从。这就是参数-style=<LLVM|Google|Chromium|Mozilla|Webkit>的目的。这项功能是LibFormat库提供的便利，它让任意重构工具能够以某种具体的格式或编码惯例编写新代码。我们将在下一小节给出关于这个著名的特性的更多细节。
-ClangFormat
-想象你是一项竞赛的评审员，类似于国际模糊C代码竞赛（IOCCC: International Obfuscated C Code Contest）。为了给你一种竞赛的感觉，我们将再次产生22期胜者之一Michael Birken的代码。记住，这份代码在Creative Commons
-Attribution-ShareAlike 3.0许可证下获得许可，这意味着你可以任意地修改它，只要你保留此许可证，并把荣誉归于IOCCC。
-免得你想问，这是正确的代码吗？告诉你，是的。访问http://www.ioccc.org/2013/birken可下载它。现在，让我们演示ClangFormat会怎么处理此代码。
-$ clang-format -style=llvm obf.c --
-下面的截屏显示了结果：
-
-变好了，对吗？在实际中，你将幸运地不需要检查模糊不清的代码，但是调整格式以遵循特别的编码惯例不是人类特别梦想的工作。这就是ClangFormat的目的。它不只是一个工具，还是一个库，LibFormat，它格式化代码以适应某种编码惯例。这样，如果你新建的工具恰好会生成C或C++代码，你可以专注于你的项目，而把格式的事情留给ClangFormat。
-除了展开这个明显人为的例子，执行代码缩进，ClangFormat是一个巧妙的工具，它被细心地开发出来以最好地格式化代码，将代码调整为80行格式，并提高其可读性。如果你曾经停留于考虑如何最好地分解一个长句，你会感激ClangFormat是多么善于处理这样的任务。尝试在你最喜欢的编辑器中将它设置为一个外部工具，配置一个启动它的热键。如果你在使用著名的编辑器，例如Vim或者Emacs，请确认有人已经写了定制的脚本来集成ClangFormat。
-
-代码格式化、组织和澄清等话题，还引出了C和C++代码令人讨厌的问题：滥用头文件，以及怎么协调它们。下一节将专注于讨论针对此问题的在进行中的方案，以及Clang工具怎么帮助你采用此新方法。
-
-模块化
-为了理解模块化项目的目标，我们首先需要介绍C++中的模块概念，这是偏离本章主题的闲谈。在写作此文的时候，模块还没有正式地标准化。对于Clang怎么为C/C++项目实现新想法不感兴趣的读者，鼓励你跳过这个小节，跳到下一个工具。
-
-理解C/C++ API的定义
-目前，C和C++程序被分成头文件，例如扩展名为.h的文件，和实现文件，例如扩展名为.c或者.cpp的文件。编译器把每个实现文件和包含文件的结合诠释为单独的翻译单元。
-
-当以C或C++编程的时候，如果你在一个特定的实现文件上工作，你需要考虑哪些实体属于局部作用域，哪些属于全局作用域。例如，不被不同实现文件共享的函数和数据，在C中应该以关键字static声明，或者在C++中声明在匿名namespace中。这告诉链接器这个翻译单元不暴露局部实体，因而其它单元无法使用它们。
-
-然而，如果你不想在不同翻译单元之间共享实体，会出现问题。为了清楚起见，让我们将导出实体的翻译单元称为exporter，将使用这些实体的翻译单元称为importer。我们还假设，一个名为gamelogic.c的exporter想要向名为screen.c的importer导出一个简单的整数变量，名为num_lives。
-
-链接器职责
-首先，我们将介绍在我们的例子中链接器如何处理符号导入。在编译并汇编gamelogic.c之后，我们将得到一个名为gamelogic.o的目标文件，它的符号表显示，符号num_lives占用4个字节，其它翻译单元可以使用它。
-
-$ gcc -c gamelogic.c -o gamelogic.o
-$ readelf -s gamelogic.o
-Num Value Size Type Bind Vis Index Name
-7 00000000 4 OBJECT GLOBAL DEFAULT 3 num_lives
-
-这个表只显示了我们关注的符号，省略了其它符号。readelf工具仅在Linux平台上可用，它依赖ELF，被广泛采用的Executable and Linkable Format。如果你使用其它平台，可以用objdump -t打印符号表。我们这样理解这个表：在表中符号num_lives被分配为第7个位置，占用相对于索引为3的段（.bss段）的首地址（零）.反过来，.bss段持有数据实体，它被初始化为零。为了验证段名和其索引的对应关系，用readelf -S或者objdump -h打印段的头信息。从这个表，我们还知道，符号num_lives是一个（数据）object，包含4个字节，是全局可见的（global bind）。
-
-类似地，screen.o文件的符号表会显示这个翻译单元依赖符号num_lives，它属于另一个翻译单元。要想分析screen.o，可用之前用在gamelogic.o上的相同命令：
-$ gcc -c screen.c -o screen.o
-$ readelf -s screen.o
-
-这个表项类似于exporter中的那个，只是它的信息少。它没有size和type，显示哪个ELF段包含这个符号的index被标记为UND（未定义），这标志这个翻译单元是importer。如果这个翻译单元被选择编入最终的程序，链接必须解决这个依赖关系，否则就不成功。
-
-链接器收到这两个文件作为输入，用importer请求的符号的地址对importer打补丁，这个符号在exporter中。
-$ gcc screen.o gamelogic.o -o game
-$ readelf -s game
-
-现在，这个值反映了程序被加载时变量的完整虚拟内存地址，向importer的代码段提供了符号的位置，完成了不同翻译单元之间的导出-导入协议。
-
-我们得出结论，在链接器这边，在多个翻译单元之间共享实体是简单而高效的。
-
-前端对应部分
-处理目标文件是简单的，但是这并不反映在语言中。不同于链接器，在导入的实现中，编译器不能只根据导入实体的名字，因为它需要验证这个翻译单元的语义没有违反语言的类型系统，即它需要知道num_lives是一个整数。因此，编译器期望得到导入实体的名字连同类型信息。回顾历史可知，C通过引入头文件解决这个问题。
-
-头文件包含实体的名字连同类型信息，它们被不同的翻译单元使用。在这个模型中，导入者用include命令加载它将导入的实体的类型信息。然而，头文件的用法不止于此，事实上，它还可以带入任意的C或C++代码，不只是声明。
-
-依赖C/C++预处理器的问题
-和如Java中的语言指令import不同，Include指令的语义不要求为编译器提供导入符号的必要信息，而是展开成更多需要被解析的C或C++代码。这个机制由预处理器实现，它不加思考地在实际编译前复制并修补代码，相当于一个文本处理工具。
-
-代码量的膨胀在C++代码中更复杂，C++模板鼓励在头文件中实现完整的类，它之后变成大量额外的C++代码被注入到所有使用头文件的导入者中。
-
-这使得C或C++项目的编译增加沉重的负担，因为它们依赖于很多库（或者外部定义的实体），编译器需要多次解析很多头文件，为每个编译单元解析它所用到的头文件一次。
-
-(notes)
-
-大型的编译器项目往往用一个预编译头文件方法来避免重复词法解析每个头文件，例如，Clang的PCH文件。然而，这仅仅缓解了问题，因为编译仍然需要重新解释整个头文件，鉴于可能存在新的宏定义，这影响当前翻译单元如何解释这个头文件。
-
-举例来说，假设我们的游戏以下面的方式实现gamelogic.h：
-#ifdef PLATFORM_A
-extern uint32_t num_lives;
-#else
-extern uint16_t num_lives;
-#endif
-
-当screen.c包含这个文件时，导入的实体num_lives的类型依赖于是否在翻译单元screen.c的上下文中定义了宏PLATFORM_A。而且，对于另一个翻译单元，这个上下文不是必须相同的。这强制编译器加载头文件的额外的代码，每当不同的翻译单元包含头文件时。
-
-为了控制C/C++导入以及如何编写库接口，模块提出一个描述此接口的新的方法，它是讨论中的标准的一部分。此外，Clang已经在实现对模块的支持了。
-
-理解模块的工作方式
-你的翻译单元可以导入一个模块，它定义一个清晰无歧义的接口以使用一个具体的库，而不是包含头文件。import指令会加载由一个给定的库导出的实体，无需向你的翻译单元注入额外的C或C++代码。
-
-然而，目前没有已定义的导入语法，C++标准委员会还在讨论此特性。目前，Clang提供了一个额外的标记，称为-fmodules，它直接将include解释为模块的import指令，当你包含一个属于模块化的库的头文件的时候。
-
-当解析属于模块的头文件时，Clang会生成一个它自己的实例，它的预处理器状态是干净的，以此编译这些头文件，并把结果以二进制形式保存为高速缓存，以加速后续翻译单元的编译，它们依赖于相同的头文件，此头文件定义了一个特定的模块。因此，这些已成为模块一部分的头文件，不可依赖于先前定义的宏，或者其它预处理器先前的状态。
-
-使用模块
-为了将一组头文件映射为一个具体的模块，可以定义一个单独的文件，称为module.modulemap，它提供此信息。这个文件被放置的目录，应该和定义库的API的头文件的目录相同。如果这个文件存在，并且以-fmodules调用Clang，编译就会使用模块。
-
-让我们扩展简单游戏例子以使用模块。假设游戏API是由两个头文件定义的，gamelogic.h和screenlogic.h。主文件game.c从这两个文件导入实体。游戏API源代码的内容如下：
-
-gamelogic.h文件的内容：
-extern int num_lives;
-screenlogic.h文件的内容：
-extern int num_lines;
-gamelogic.c文件的内容：
-int num_lives = 3;
-screenlogic.c文件的内容：
-int num_lines = 24;
-
-还有，在我们的游戏API中，每当用户包含gamelogic.h头文件时，他也会想要包含screenlogic.h以在屏幕上打印游戏数据。从而，我们将结构化我们的逻辑模块以表达这种依赖。因此，项目的module.modulemap文件定义如下：
-module MyGameLib {
-explicit module ScreenLogic {
-header "screenlogic.h"
-}
-explicit module GameLogic {
-header "gamelogic.h"
-export ScreenLogic
-}
-}
-
-关键字module后面跟着名字，你期望用这个名字识别它。在我们的例子中，我们命名它为MyGameLib。每个模块可以有一列封闭的子模块。关键字explicit用来告诉Clang，这个子模块被导入仅当其中一个它的头文件被显式地包含。你可以列出很多头文件来表示单个子模块，但是这里我们的每个子模块只用到一个头文件。
-
-由于我们在用模块，我们可以利用它们让事情变得更简单，让include指令更简单。注意，在GameLogic子模块的作用域，通过在ScreenLogic子模块的名字后面使用export关键字，我们声明，每当用户导入GameLogic子模块时，我们也让ScreenLogic的符号可见。
-
-为了说明上述内容，我们会编写game.c，即这个API的用户，如下
-// File: game.c
-#include "gamelogic.h"
-#include <stdio.h>
-int main() {
-printf("lives= %d\nlines=%d\n", num_lives, num_lines);
-return 0;
-}
-
-注意，我们用到了在gamelogic.h中定义的num_lives，和在screenlogic.h中定义的num_lines，它们不是显式包含的。然而，当clang以-fmodules参数解析这个文件时，它会转换第一个include指令，达到import GameLogic子模块的效果，这促使在ScreenLogic中定义的符号可见。因此，下面的命令可以正确地编译这个项目：
-$ clang -fmodules game.c gamelogic.c screenlogic.c -o game
-
-另一方面，调用无模块系统的Clang将导致报告缺失符号定义：
-$ clang game.c gamelogic.c screenlogic.c -o game
-screen.c:4:50: error: use of undeclared identifier 'num_lines'; did you
-mean 'num_lives'?
-printf("lives= %d\nlines=%d\n", num_lives, num_lines);
-^~~~~~~~~
-num_lives
-
-然而，记住你希望你的项目尽可能地可移植，因此避免如下情况是令人感兴趣的，即支持模块时能正确编译，不支持时则不能。最适合采用模块的场景，是为简化库API的使用，和加速依赖很多公共头文件的翻译单元的编译。
-
-理解模块化
-一个好的示例，是改编一个已有的大型项目，让它使用模块而不是包含头文件。记住，在模块框架中，附属每个子模块的头文件是独立编译的。例如，很多项目依赖于这样的宏，它们在包含指令之前的其它文件中被定义，大概不能移植为使用模块。
-
-modularize的目的就是帮助你完成此任务。它分析一系列头文件，报告它们是否具有重复的变量定义、宏定义，或者如此宏定义，它们可能评估为不同的结果，依赖于预处理器的状态。它帮助你诊断常见的障碍，以根据一系列头文件创建模块。它还检测项目是否在名字空间区域中使用include指令，这也会强制编译器在不同的作用域中解释包含的文件，此作用域和模块的概念不兼容。如此，在头文件中定义的符号必须不依赖于头文件被包含处的上下文。
-
-使用模块化
-要使用modularize，你必须提供一个头文件的列表，它们将被逐个比较检查。继续我们的游戏项目的例子，我们会写一个新的文本文件，称为list.txt，如下：
-gamelogic.h
-screenlogic.h
-
-然后，简单地运行modularize，以这个列表为参数：
-$ modularize list.txt
-
-如果你改变其中一个头文件，定义相同的符号，modularize会报告存在不安全的模块行为，在为你的项目写入module.modulemap文件之前，你应该修正头文件。在修正头文件时，记住每个头文件应该尽可能地独立，它不应该修改它定义的符号，依赖于包含头文件的文件所定义的值。如果依赖于这种行为，你应该将这个头文件分成两个或更多，每个定义编译看到的符号，当使用一组特定的宏时。
-
-模块映射检查器
-Clang工具模块映射检查器检查module.modulemap文件，确保它涵盖了一个目录中的所有头文件。对于前面小节的例子，用下面的命令调用它：
-$ module-map-checker module.modulemap
-
-我们讨论了使用include指令对比模块，预处理器是其中的症结。在下一节，我们会推介一个工具，它帮助你跟踪这个独特的前端组件的活动。
-
-PPTrace
-请看下面的引文，它来自关于clang::preprocessor的Clang文档，在http://clang.llvm.org/doxygen/
-classclang_1_1Preprocessor.html：
-
-Engages in a tight little dance with the lexer to efficiently preprocess tokens.（与词法分析器紧密协作以高效地预处理标记。）
-
-如第4章前端已经指出的那样，Clang中的lexer类执行源代码文件分析的第一步。它将大块的文本识别成词汇，之后由解析器作解释。lexer没有语义的信息，语义分析是解析器的责任，也不关心包含的头文件和宏展开，这是预处理器的责任。
-
-Clang的pp-trace独立工具输出预处理过程的踪迹。它实现此功能的方法是实现clang::PPCallbacks接口的回调函数。它首先将自己注册为预处理器的观察员，然后启动Clang以分析输入文件。对于预处理器的每个动作，例如解释#if指令，导入模块，包含头文件，等等，这个工具会在屏幕上打印消息。
-
-考虑下面的特意编写的"hello world"C程序：
-#if 0
-#include <stdio.h>
-#endif
-#ifdef CAPITALIZE
-#define WORLD "WORLD"
-#else
-#define WORLD "world"
-#endif
-extern int write(int, const char*, unsigned long);
-int main() {
-write(1, "Hello, ", 7);
-write(1, WORLD, 5);
-write(1, "!\n", 2);
-return 0;
-}
-
-在前面的代码的第一行，我们用了预处理指令#if，它总是取值为假，强制编译器忽略源代码块的内容，直到下一个#endif指令。接着，我们用#ifdef指令检查是否定义了CAPITALIZE宏。根据是否定义了这个宏，宏WORD会被定义为大写的WORD字符串，或者小写的word字符串。最后，代码调用了一系列write系统调用，以在屏幕上输出消息。
-
-运行pp-trace，就像我们运行其它类似的Clang源代码分析独立工具：
-$ pp-trace hello.c
-
-结果是一系列关于宏定义的预处理器事件，发生在实际的源代码被处理之前。最后的事件涉及上述具体文件，如下：
-
-第一个事件涉及我们的第一个#if预处理器指令。这个区域触发了三次回调：If，Endf，和SourceRangeSkipped。注意到里面的#include指令是不处理的，它被跳过了。类似地，我们看到宏WORD相关的事件：IfDef，Else，MacroDefined，和Endif。最后，pp-trace通过MacroExpands事件报告我们用到了宏WORD，然后到达了文件末尾，调用了回到函数EndOfMainFile。
-
-预处理之后，前端的下一步是词法分析和解析。在下一节，我们介绍一个工具，它研究解析器的结果，即AST节点。
-
-Clang查询
-Clang查询工具是在LLVM 3.5中引入的，它能够读入一个源文件，交互地查询它所关联的Clang AST节点。这是一个很好的工具，帮助我们查看并学习前端如何表达每行代码。然而，它的主要目标，让你不但能够查看程序的AST，而且能够测试AST匹配器。
-
-当编写一个重构工具时，你会对使用AST匹配器库感兴趣，它包含若干断言，它们匹配你所感兴趣的Clang AST片段。Clang查询工具可以在开发的这个部分帮助你，因为它让你能够查看哪个AST节点匹配一个具体的AST匹配器。你可以在ASTMatchers.h中查看可用的AST匹配器的列表，但是你也可以用驼峰大小写的名字，猜测表示你所感兴趣的AST节点的类。例如，functionDecl会匹配所有FunctionDecl节点，它们表示函数声明。在你试验了哪个匹配器确切地返回你所感兴趣的节点之后，你可以在你的重构工具中用它们实现一个自动转换的方法，为了某个特定的目的。在本章的后面，我们会解释如何使用AST匹配器库。
-
-作为一个查看AST的例子，我们会对上次PPTrace中用到的“hello world”代码运行clang-query。Clang查询期望你有一个编译命令数据库。如果你在查看一个文件，它没有编译命令数据库，就在双短划线之后给出编译命令，或者空着它，如果不需要特别的编译器选项，如下面的命令行所示：
-$ clang-query hello.c --
-
-发出这个命令之后，clang-query会显示一个交互提示，等待你输入命令。你可以输入match命令和任意AST匹配器的名字。例如，在下面的命令中，我们让clang-query显示所有CallExpr节点：
-clang-query> match callExpr()
-
-Match #1:
-hello.c:12:5: note: "root" node binds here
-write(1, "Hello, ", 7);
-^~~~~~~~~~~~~~~~~~~~~~
-...
-这个工具会突出程序中一个确切的位置，它对应于关联CallExpr AST节点的第一个标记。Clang Query能够接受的命令列表如下：
-help：打印命令列表。
-match <matcher name>或m <matcher name>：这个命令以要求的匹配器遍历AST。
-set output <(diag | print | dump)>：这个命令修改如何打印节点信息，一旦它被成功地匹配。第一个选项会打印一个Clang诊断消息，突出节点，这是默认选项。第二个选项会简单地打印匹配到的对应源代码的摘要，而最后的选项会调用类成员函数dump()，它具有相当精妙的调试功能，还会显示所有子节点。
-
-了解一个程序的Clang AST的结构的一个重要方法，是修改dump输出，匹配高层级节点。试一试：
-clang-query> set output dump
-clang-query> match functionDecl()
-它会显示某些类的所有实例，这些类制作了所有函数体的语句和表达式，这些函数来自你所打开的C源代码。另一方面，记住，这种完全的AST dump，利用Clang Check是更容易得到的，我们会在下一节会介绍它。Clang Query更适用于制作AST匹配器表达式和检查它们的结果。后面你会见证Clang Query如何是一个极其有用的工具，当它帮助我们制作我们的第一个代码重构工具的时候，那时我们会讲到如何产生更复杂的查询。
-Clang Check
-        Clang Check是一个非常基础的工具，它只有几百行代码，这让它易于学习。然而，它具备整个Clang的解析能力，因为它链接了LibTooling。
-　    Clang Check让你能够解析C/C++源代码文件，打印Clang AST，或者执行基础的检查。它还可以应用Clang给出的“fix it”修改建议，利用为Clang Modernizer建造的重写器设施。
-　    例如，假设你想要打印program.c的AST，你会输入下面的命令：
-$ clang-check program.c -ast-dump --
-　    注意，Clang Check遵从LibTooling读取源文件的方式，你可以用一个命令数据库文件，或者在双短划线（--）之后输入适当的参数。
-　    Clang Check是一个小工具，当编写你自己的工具时，将它当作一个例子来学习。在下一小节，我们将介绍另一个小工具，让你了解小的代码重构工具能做什么。
-去除c_str()调用
-        remove-cstr-calls工具是一个简单的源到源转换工具的例子，也就是一个重构工具。它在工作时会识别冗余的对std::string对象的c_str()调用，并重写代码使得在特定情况下避免之。这种冗余的调用可能会出现，首先，当建造一个新的string对象时，通过另一个string对象的c_str()的结果，例如，std::string(myString.c_str())。这可以简化为直接使用string拷贝构造器，例如，str::string(myString)。其次，当建造LLVM的具体的StringRef和Twine类的实例时，根据string对象来建造。在此情况下，更优的是使用string对象本身，而不是其c_str()的结果，使用StringRef(myString)，而不是StringRef(myString.c_str())。
-        这个工具可以完整地写在单个C++文件里，它是另一个优秀的易于学习的例子，演示如何使用LibTooling建造重构工具。这就是我们下一个话题的主题。
-编写你自己的工具
-        Clang项目为使用者提供了三种接口，以利用Clang的特性和它的解析能力，包括语法和语义分析。首先，libclang是和Clang交互的主要方式，它提供了稳定的C API，允许外部项目将它嵌入其中，获得对整个框架的高层级的访问。这个稳定的接口试图保持对旧版本的向后兼容，避免由于发布新版的libclang而破坏你的软件。从其它语言使用libclang也是可能的，例如，使用Clang Python绑定。Apple Xcode，举个例子，它通过libclang和Clang交互。
-        其次，Clang插件，它允许你在编译过程中添加你自己的Pass，而不是由工具执行离线的分析，比如Clang静态分析器。当你每次编译一个翻译单元都要执行它时，这是有用的。因此，你需要考虑执行这种分析所需的时间，是否适合频繁地运行。另一方面，将你的分析集成到build系统是如此容易，就像给编译器命令增加选项。
-        最后的方式是我们将要探索的，就是通过LibTooling利用Clang。这是一个令人激动的库，它让我们能够轻松地建造独立的工具，类似于本章中所介绍的，以代码重构或者语义检查为目标。和LibClang相比，LibTooling较少为了向后兼容而妥协，让你能够完全地访问Clang AST结构。
-问题定义-编写一个C++代码重构工具
-        在本章的剩余部分，我们将介绍一个例子。假设你发起了一个虚构的创业项目，创立一种新的C++ IDE，称为IzzyC++。你的商业计划是吸引特定的用户，他们厌烦IDE不能自动地重构他们的代码。你将利用LibTooling制作一个简单而好用的C++代码重构工具；它接受如下参数，一个C++成员函数，它是完全限定的名字，和一个替换的名字。它的任务，就是找到这个成员函数的定义，将它修改为替换的名字，并且相应地修改所有对这个函数的调用。
-确定你的源代码的位置
-        第一步是决定在何处存放你的工具的代码。在LLVM的源代码文件夹中，我们将新建一个文件夹，称为izzyrefactor，在tools/clang/tools/extra中，以存放我们项目的所有文件。之后，扩展extra文件夹中的Makefile，以包含你的项目。简单地，找到DIRS变量，并在其它Clang工具项目的旁边添加名字izzyrefactor。或许你还想编辑CMakeLists.txt文件，假如你使用CMake，添加新的一行：
-        add_subdirectory(izzyrefactor)
-        去到izzyrefactor文件夹，创建一个新的Makefile，以标记LLVM-build系统你要建造一个独立的工具，它会独立于其它二进制文件而存在。使用下面的内容：
-CLANG_LEVEL := ../../.. 
-TOOLNAME = izzyrefactor 
-TOOL_NO_EXPORTS = 1 
-include $(CLANG_LEVEL)/../../Makefile.config 
-LINK_COMPONENTS := $(TARGETS_TO_BUILD) asmparser bitreader support\
-                   mc option 
-USEDLIBS = clangTooling.a clangFrontend.a clangSerialization.a \ 
-           clangDriver.a clangRewriteFrontend.a clangRewriteCore.a \ 
-           clangParse.a clangSema.a clangAnalysis.a clangAST.a \ 
-           clangASTMatchers.a clangEdit.a clangLex.a clangBasic.a
-include $(CLANG_LEVEL)/Makefile
-        这是一个重要的文件，它指定了所有需要和你的代码链接到一起的库，这样你才能建造这个工具。可选地，你可以添加一行NO_INSTALL = 1，就在设置TOOL_NO_EXPORTS这行之后，如果你不想你的新工具和其它LLVM工具那样被安装，当你运行make install的时候。
-        我们设置TOOL_NO_EXPORTS = 1，因为你的工具不会使用任何插件，因此，它不需要导出符号，减小了最终程序的动态符号表的尺寸，这样也减少了动态链接并加载程序的时间。注意我们通过包含Clang总的Makefile完成了工作，它定义了编译这个项目所需的所有规则。
-        如果你使用CMake而不是自动工具配置脚本，就创建一个新的CMakeLists.txt文件，写入如下内容：
-add_clang_executable(izzyrefactor 
-  IzzyRefactor.cpp 
-  ) 
-target_link_libraries(izzyrefactor 
-     clangEdit clangTooling clangBasic clangAST clangASTMatchers)
-此外，如果你不想在Clang源代码树中build这个工具，你也可以将它build为一个独立的工具。只要使用第4章（前端）的末尾为驱动器工具介绍的同样的Makefile，作稍微修改。注意我们在前面的Makefile中用了哪些库，在USEDLIBS变量中，以及我们在第4章（前端）的Makefile中用了哪些库，在CLANGLIBS变量中。它们引用了相同的库，除了USEDLIBS有clangTooling，它包含LibTooling。因此，在第4章（前端）的Makefile中，在-lclang\这行之后，添加一行-lclangTooling\，就大功告成了。
-剖析工具样板代码
-        你的所有代码会写在IzzyRefactor.cpp中。新建这个文件并开始添加初始的样板代码，如下所示：
-        int main(int argc, char **argv) {
-            cl::ParseCommandLineOptions(argc, argv);
-            string ErrorMessage;
-            OwningPtr<CompilationDatabase> Compilations (CompilationDatabase::loadFromDirectory(BuildPath, ErrorMessage));
-            if (!Compilations)
-                report_fatal_error(ErrorMessage);
-            // ...
-        }
-        你的主要代码从ParseCommandLineOptions函数开始，它来自llvm::cl名字空间（command-line用途）。这个函数为你不厌其烦地解析argv中的每个选项 。
-典型地，基于LibTooling的工具会使用CommonOptionsParser对象，以轻松解析通用的选项，它们为所有重构工具所共用（参见http://clang.llvm.org/doxygen/classclang_1_1tooling_1_1CommonOptio nsParser.html作为一个代码示例）。在这个例子中，我们用低层级的ParseCommandLineOptions()函数来说明确切地我们打算解析哪些参数，并训练你在其它它们不使用LibTooling的工具中使用它。然而，自由地去使用CommonOptionsParser，让你的工作变得轻松（以不同的方式编写此工具, 作为练习）。
-        你将证实，所有的LLVM工具都会使用cl名字 空间提供的功能（http://llvm.org/docs/doxygen/html/namespacellvm_1_1cl.html），定义我们的工具在命令行中识别哪些参数，实在是简单。为此，我们声明新的模板类型opt和list的变量：
-cl::opt<string> BuildPath( 
-  cl::Positional, 
-  cl::desc("<build-path>")); 
-cl::list<string> SourcePaths( 
-  cl::Positional, 
-  cl::desc("<source0> [... <sourceN>]"), 
-  cl::OneOrMore); 
-cl::opt<string> OriginalMethodName("method", 
-  cl::desc("Method name to replace"), 
-  cl::ValueRequired); 
-cl::opt<string> ClassName("class", 
-  cl::desc("Name of the class that has this method"), 
-  cl::ValueRequired); 
-cl::opt<string> NewMethodName("newname", 
-  cl::desc("New method name"), 
-  cl::ValueRequired);
-
-        在定义main函数前声明这五个全局变量。我们具体化了类型opt，根据我们期望读取什么样的数据作为参数。例如，如果你需要读取一个数字，你会声明一个新的cl::opt<int>全局变量。
-        为了读取这些参数的数值，你首先需要调用ParseCommandLineOptions。之后，你只需要引用关联变量的全局变量的名字，在你期望所关联的数据类型的代码处。例如，NewMethodName会给出使用者未这个参数提供的字符串，如果你的代码期望一个字符串的话，像std::out << NewMethodName。
-        这是怎么工作的？opt_storage<>模板，就是opt<>的父类，定义了一个类，此类继承自它所管理的数据类型（此处为string）。通过继承，opt<string>变量也是可以被如此使用的字符串。如果opt<>类模板不能继承自被包裹的数据类型（例如，不存在int类），它会定义一个类型转换操作符，例如为int数据类型定义operator int()。在你的代码中，效果是一样的；当你引用一个cl::opt<int>变量时，它会自动地转换为一个整数，并返回它所存储的数字，就是使用者在命令行中提供的数字。
-        我们还可以为参数指定不同的特征。在我们的例子中，我们通过指定cl::Positional使用了位置参数，这意味着使用者不会显示地以它的名字指定参数，而是会根据它在命令行中的相对位置推断出来。我们还向opt构造器传递了一个desc对象，它定义了一段描述，当使用者在命令行中输入-help参数以打印帮助信息时，此描述信息会展示给使用者。
-        我们还有一个使用类型cl::list的参数，不同于opt，它允许传递多个参数，在这种情况下，要处理一列源代码文件。这些用法要求包含下面的头文件：
-#include "llvm/Support/CommandLine.h"
-作为LLVM编码标准的一部分，你应该组织你的include语句，首先包含本地头文件，随后包含Clang和LLVM API头文件。当两个头文件属于相同的类别时，按字母顺序安排它们。写一个新的独立工具，它自动为你整理头文件顺序，这将是一个有趣的项目。
-        最后三个全局变量设定所需选项以使用我们的重构工具。第一个是名字参数-method。紧随的第一个字符串指定参数名字，没有短线，而cl::RequiredValues会通知命令行解析器，指示这个值是运行这个程序所需要的。这个参数会给出方法的名字，我们的工具会去寻找这个方法，然后将它的名字修改为由-newname给出的名字。参数-class给出拥有这个方法的类的名字。
-        下一段来自模板代码的代码摘要管理一个新的CompilationDatabase对象。首先，我们需要包含定义OwningPtr类的头文件，它是LLVM库用到的智能指针，就是说，它会自动地释放所包含的指针，当它到达作用域的末尾时。
-#include "llvm/ADT/OwningPtr.h"
-注意Clang版本
-从Clang/LLVM版本3.5开始，人们弃用了OwningPtr<>模板，而是转向C++标准的std::unique_ptr<>模板。
-        其次，我们需要包含CompilationDatabase类的头文件，它是我们第一次用到的正式属于LibTooling的文件：
-#include "clang/Tooling/CompilationDatabase.h"
-        这个类负责管理编译数据库，本章的开头解释了对它的配置。它是一个强大的编译命令的列表，这些命令是处理每个源文件所必需的，使用者用你的工具分析这些文件，这是他们感兴趣的。为了初始化这个对象，我们用到一个工厂方法，称为loadFromDirectory，它会从一个特定的build目录加载编译数据库文件。这就是将build路径声明为输入工具的参数的目的；使用者需要指定从哪里加载他们的源文件以及编译数据库文件。
-        注意，我们给这个工厂成员函数输入两个参数：BuildPath，我们的cl::opt对象，它代表一个命令行对象，以及一个近期声明的ErrorMessage字符串。ErrorMessage字符串会被填充一个消息，假如引擎加载编译数据库失败了，即工厂成员函数没有返回任何CompilationDatabase对象，这时我们会马上显示这个消息。llvm::report_fatal_error()函数会触发任何已配置的LLVM错误处理例程，并以错误码1退出我们的工具。它要求包含下面的头文件：
-#include "llvm/Support/ErrorHandling.h"
-        在我们的例子中，我们缩写了很多类的完全修饰名字，因此还需要在全局作用域添加若干个using声明，但是只要你喜欢，你可以使用完全修饰名字：
-using namespace clang; 
-using namespace std; 
-using namespace llvm; 
-using clang::tooling::RefactoringTool; 
-using clang::tooling::Replacement; 
-using clang::tooling::CompilationDatabase; 
-using clang::tooling::newFrontendActionFactory;
-使用AST匹配器
-        本章的Clang Query小节简单地介绍过了AST匹配器，但是我们在这里会深入分析其细节，因为它们对于编写基于Clang的代码重构工具是非常重要的。
-        AST匹配器库让它的使用者能够轻松地匹配符合特定断言的Clang AST的子树，例如，表示对一个函数的调用的所有AST节点，它的名字为calloc，并且有两个参数。查找特定的Clang AST节点并修改它们，这是每个代码重构工具共同的基本任务，对这个库的利用极大地减轻了编写此类工具的任务。
-        为了帮助我们找到正确的匹配器，我们会依靠Clang Query和AST匹配器文档，文档在此处可获得：http://clang. llvm.org/docs/LibASTMatchersReference.html。
-        我们先为你的工具编写一个名为wildlifesim.cpp的测试案例。这是一个复杂的一维动物生活模拟器，其中的动物可以沿着直线向任何方向行走：
-class Animal { 
-  int position; 
-public: 
-  Animal(int pos) : position(pos) {} 
-  // Return new position 
-  int walk(int quantity) { 
-    return position += quantity; 
-  } 
-}; 
-class Cat : public Animal { 
-public: 
-  Cat(int pos) : Animal(pos) {} 
-  void meow() {} 
-  void destroySofa() {} 
-  bool wildMood() {return true;} 
-}; 
-int main() { 
-  Cat c(50); c.meow(); 
-  if (c.wildMood()) 
-    c.destroySofa(); 
-  c.walk(2); 
-  return 0; 
-   }
-        我们要求你的工具能够将成员函数比如walk重命名为run。让我们运行Clang Query，研究在此例子中AST看起来是什么样子。我们会用recordDecl匹配器，输出所有RecordDecl AST节点的内容，它们负责表示C结构和C++类：
-$ clang-query wildanimal-sim.cpp -- 
-clang-query> set output dump 
-clang-query> match recordDecl() 
-(...) 
-|-CXXMethodDecl 0x(...) <line:6:3, line 8:3> line 6:7 walk 'int (int)' 
-(...)
-        在表示Animal类的RecordDecl对象的内部，我们观察到walk被表示为一个CXXMethodDecl AST节点。通过查看AST匹配器文档，我们发现它是由methodDecl AST匹配器匹配的。
-组合匹配器
-        AST匹配器的强大在于它们能被组合。如果我们只想要MethodDecl节点，它们声明了一个称为walk的成员函数，就可以先匹配所有名为walk的有名字声明，然后精炼之使之只匹配那些又是方法声明的节点。hasName(“input”)匹配器返回所有名为“input”的有名字声明。你可以在Clang Query中测试methodDecl和hasName的组合：
-clang-query> match methodDecl(hasName("walk"))
-        你将看到它只返回了一个声明，walk的声明，而不是代码中存在的所有八个不同方法的声明。太好了！
-        尽管如此，观察到仅修改Animal类的walk方法的定义是不够的，因为派生的类可能重载它。我们不希望我们的重构工具重写了基类的一个方法而不重写派生类中重载的其它方法。
-        我们需要找到所有定义了walk方法的类，它们是Animal类或者其派生类。为了找到所有Animal类或者其派生类，我们使用匹配器isSameOrDerivedFrom()，它期望一个NamedDecl参数。这个参数将通过和一个匹配器的组合来提供，这个匹配器选择具有特定名字的所有NamedDecl，hasName()。因此，我们的查询看起来是这样的：
-clang-query> match recordDecl(isSameOrDerivedFrom(hasName("Animal")))
-        我们还需要选择那些重载了walk方法的派生类。hasMethod()断言返回包含具体方法的类声明。我们将它和第一个查询组合成如下查询：
-clang-query> match recordDecl(hasMethod(methodDecl(hasName("walk"))))
-        为了用and操作符语义（所有的断言必须成立）连结两个断言，我们使用allOf()匹配器。它规定所有作为操作数输入的匹配器必须成立。此时我们准备好了建造我们最终的查询，以找到我们将重写的所有声明：
-clang-query> match recordDecl(allOf(hasMethod(methodDecl(hasName("wa lk"))), isSameOrDerivedFrom(hasName("Animal"))))
-        利用这个查询，我们能够精确地找到Animal类或者其派生类的所有walk方法的声明。
-        这允许我们修改所有这些声明的名字，但是我们还需要修改方法的调用。为此，我们先来考察CXXMemberCallExpr节点和它的匹配器memberCallExpr。试一下：
-clang-query> match memberCallExpr()
-        Clang Query返回四个匹配，因为我们的代码确实含有四个方法调用：meow，wildMood，destroySofa，和walk。我们只对定位最后一个感兴趣。我们已经知道如何利用hasName()匹配器来选择具有特定名字的声明，但是如何将具有名字的声明映射到成员函数调用的表达式呢？答案是使用member()匹配器来只选择它们，它们是具有名字并且和一个方法名字相链接的声明，然后使用callee()匹配器将它们和调用表达式链接起来。完整的表达式如下：
-clang-query> match memberCallExpr(callee(memberExpr(member(hasName("walk")))))
-        然而，这样的做法，我们盲目地选择了所有对walk()方法的调用。我们只想选择那些确实指向Animal类或者其派生类的walk调用。memberCallExpr()匹配器接受第二个匹配器作为参数。我们会使用thisPointerType()匹配器以只选择那些方法调用，其被调用的对象是特定的类。利用这个规则，我们构建了完整的表达式：
-clang-query> match memberCallExpr(callee(memberExpr(member(hasName("wa lk")))), thisPointerType(recordDecl(isSameOrDerivedFrom(hasName("Anim al")))))
-在代码中运用AST匹配器断言
-        我们已经决定了用哪些断言来捕获正确的AST节点，是时候在我们的工具的代码中运用它们了。首先，为了使用AST匹配器，我们需要添加新的include命令：
-#include "clang/ASTMatchers/ASTMatchers.h" 
-#include "clang/ASTMatchers/ASTMatchFinder.h"
-        我们还需要添加新的using命令，使得易于引用这些类（写在其它的using命令后面）：
-using namespace clang::ast_matchers;
-        第二个头文件是使用实际的查找器机制所必须的，马上我们会介绍它。从之前停止的地方继续编写main函数，我们开始添加剩余的代码：
-    RefactoringTool Tool(*Compilations, SourcePaths);
-    ast_matchers::MatchFinder Finder;
-    ChangeMemberDecl DeclCallback(&Tool.getReplacements());
-    ChangeMemberCall CallCallback(&Tool.getReplacements()));
-    Finder.addMatcher(recordDecl(allOf(hasMethod(id("methodDecl", methodDecl(hasName(OriginalMethodName)))),
-        isSameOrDerivedFrom(hasName(ClassName)))), &DeclCallback);
-    Finder.addMatcher(memberCallExpr(callee(id("member", memberExpr(hasName(OriginalMethodName))))),
-        thisPointerType(recordDecl(isSameOrDerivedFrom(hasName(ClassName)))), &CallCallback);
-  return Tool.runAndSave(newFrontendActionFactory(&Finder));
-注意Clang版本：在版本3.5中，你需要将以上代码的最后一行修改为
-return Tool.runAndSave(newFrontendActionFactory(&Finder.get());
-为了使它能工作。
-        这完成了main函数的整个代码。之后我们会介绍回调函数的代码。
-        第一行代码实例化了一个新的RefactoringTool对象。这是我们用到的LibTooling的第二个类，它需要一个另外的语句：
-#include "clang/Tooling/Refactoring.h"
-        RefactoringTool类为你的工具实现了协调基本任务的所有逻辑，例如打开源文件，解析它们，运行AST匹配器，当匹配发生时调用你的回调函数以执行一个动作，并按照你的工具的要求修改源代码。这就回答了为什么在初始化所有需要的对象之后，我们要调用RefactoringTool::runAndSave()，然后才结束main函数。我们将控制转移到这个类，让它执行所有基本任务。
-        接下来，我们声明了一个MatchFinder对象，其头文件已经包含了。这个类负责对Clang AST执行匹配，这是你已经用Clang Query练习过的。MatchFinder要求配置AST匹配器和回调函数，当所提供的AST匹配器匹配一个AST节点时，回调函数就会被调用。在这个回调函数中，你将有机会修改源代码。回调函数会被实现为一个MatchCallback的子类，之后我们会探讨它。
-        然后，我们接着声明回调函数对象，并且用MatchFinder::addFinder()方法将一个具体的AST匹配器关联到一个回调函数。我们声明两个单独的回调函数，一个用于重写方法声明，另一个用于重写方法调用。我们将这两个回调函数命名为DeclCallback和CallCallback。我们使用前面小节设计的两个AST匹配器组合，但是我们用ClassName替换类名字Animal，这是命令行参数，使用者会用它提供他们的要被重构的类名字。还有，我们用OriginalMethodName替换walk，这也是命令行参数。
-        我们还战略性地引入了新的匹配器，称为id()，它不修改表达式所匹配的节点，只是将一个名字绑定到一个具体的节点。这是非常重要的，使得回调函数能够产生替换内容。id()匹配器接受两个参数，第一个时节点的名字，你会利用它获取节点，第二个是匹配器，它会捕获带名字的AST。
-        第一个AST组合负责定位成员方法声明，在其中我们命名了MethodDecl节点，它识别方法。第二个AST组合负责定位对成员函数的调用，在其中我们命名了CXXMemberExpr节点，它连结被调用的成员函数。
-编写回调函数
-        你需要定义当AST节点被匹配时要执行的动作。我们为此创建两个新的类，它们派生自MatchCallback，每个匹配各有一个类。
-　class ChangeMemberDecl : public ast_matchers::MatchFinder::MatchCallback {
-　    tooling::Replacements *Replace;
-　public:
-　    ChangeMemberDecl(tooling::Replacements *Replace) :
-　        Replace(Replace) {}
-　    virtual void run(const ast_matchers::MatchFinder::MatchResult &Result) {
-　        const CXXMethodDecl *method = Result.Nodes.getNodeAs<CXXMethodDecl>(“methodDecl”);
-　        Replace->insert(Replacement(*Result.SourceManager, CharSourceRange::getTokenRange(SourceRange(method->getLocation())), NewMethodName));
-　    }
-　};
-
-    class ChangeMemberCall : public ast_matchers::MatchFinder::MatchCallback {
-        tooling::Replacements *Replace;
-　public:
-　    ChangeMemberCall(tooling::Replacements *Replace) :
-　        Replace(Replace) {}
-　    virtual void run(const ast_matchers::MatchFinder::MatchResult &Result) {
-　        const MemberExpr *member = Result.Nodes.getNodeAs<MemberExpr>(“member”);
-　        Replace->insert(Replacement(*Result.SourceManager, CharSourceRange::getTokenRange(SourceRange(member->getMemberLoc())), NewMethodName));
-　    }
-　};
-        这两个类都存储了对Replacements对象的私有的引用，它只是一个对std::set<Replacement>的typedef。Replacement类存储的信息包括，哪些行需要打补丁，在哪个文件，以及用哪部分文本。它的序列化，我们在介绍Clang Apply Replacements时讨论过了。RafactoringTool类在内部管理Replacement对象的集合，这解释了为什么我们在main函数中利用RefactoringTool::getReplacements()方法获得这个集合，并且初始化我们的回调函数。
-        我们定义了一个基本的构造器，它的参数是一个指向Replacements对象的指针，我们会存储它，为以后的使用。我们会通过重载run()方法，来实现回调函数的动作，又一次地，它的代码出奇地简单。我们的函数接受一个MatchResult对象作为参数。对于一个给定的匹配，MatchResult类存储了绑定一个名字的所有节点，如我们的id()匹配器要求的那样。
-        这些节点由BoundNodes类管理，它们在MatchResult对象中是公开可见的，可通过节点名字访问。因此，我们在run()函数中的第一个动作是得到我们感兴趣的节点，通过调用专门的方法BoundNodes::getNodeAs<CXXMethodDecl>。结果，我得到了一个指向CXXMethodDecl AST节点的只读版本的引用。
-        获得了对这个节点的访问之后，为了决定如何给代码打补丁，我们需要一个SourceLocation对象，它告诉我们关联的标记在源文件中所占据的确切的行和列。CXXMethodDecl继承自基类Decl，它表示通用的声明。这个通用的类提供了Decl::getLocation()方法，它返回的正是我们想要的SourceLocation对象。有了这个信息，我们就可以创建我们的第一个Replacement对象，并将它插入到我们的工具所建议的源代码修改的列表中。
-        我们用到的Replacement构造器需要三个参数：一个SourceManager对象的引用，一个CharSourceRange对象的引用，和一个包含新的文本的字符串，这个字符串将被写入到由头两个参数指定的位置。SourceManager类是一个普通的Clange组件，它管理加载到内存的源代码。CharSourceRange类包含有用的分析程序，它分析标记并推导出组成这个标记的源代码范围（文件中的两个点），从而决定需要从源代码文件中删除的确切的字符，而为新的文本空出位置。
-        我们用这个信息创建一个新的Replacement对象，并且将它存储在由RefactoringTool管理的set中，就完成任务了。实际上，RefactoringTool会应用这些补丁，或者去除冲突的补丁。不要忘记将所有本地的声明包裹在一个匿名的名字空间里；这是一个不让这个翻译单元导出本地符号的好办法。
-测试你的新重构工具
-        我们将用我们的野生模拟器代码例子作为一个测试案例，来测试你新创建的工具。现在你应该运行make，然后等待LLVM完成对你的新工具的编译和链接。工具生成之后，尽情地试用一番。看看我们声明为cl::opt对象的参数在命令行接口中是什么样子：
-$ izzyrefactor -help
-        为了使用这个工具，我们还需要一个编译命令数据库。我们将手动地创建一个CMake配置文件，以避免要创建并运行它。将它命名为compile_commands.json，写入下面的代码。将标签<FULLPATHTOFILE>替换为完整的路径，指向你放置野生模拟器源代码的文件夹：
-[
-{ 
-"directory": "<FULLPATHTOFILE>", 
-"command": "/usr/bin/c++ -o wildlifesim.cpp.o -c <FULLPATHTOFILE>/ wildlifesim.cpp", 
-"file": "<FULLPATHTOFILE>/wildlifesim.cpp" 
-}
-]
-        保存这个编译命令数据库之后，就可以测试工具了：
-$ izzyrefactor -class=Animal -method=walk -newname=run ./ wildfilesim.cpp
-        现在你可以检查野生模拟器源代码，会看到这个工具重命名了所有方法的定义和调用。这结束了我们的指导，但是你可以在下一节查看更多的资源，并进一步扩展你的知识。
-更多资源
-        你可以从下面的链接找到更多的资源：
-* http://clang.llvm.org/docs/HowToSetupToolingForLLVM.html：这个链接包含关于如何设置命令数据库的指令。一旦你有了这个文件，你甚至可以配置你喜欢的文本编辑器，来运行一个工具以按需检查代码。
-* http://clang.llvm.org/docs/Modules.html：这个链接给出了关于实现Clang C/C++模块的更多信息。
-* http://clang.llvm.org/docs/LibASTMatchersTutorial：这是另一个关于使用AST匹配器和LibTooling的教程。
-* http://clang.llvm.org/extra/clang-tidy.html：这里有Clang Tidy用户手册，伴随其它工具的用户手册。
-* http://clang.llvm.org/docs/ClangFormat.html：这里包含了ClangFormat的用户手册。
-* http://www.youtube.com/watch?v=yuIOGfcOH0k：这里包含了Chandler Carruth对C++Now的介绍，解释了如何建造一个重构工具。
-总结
-        在这一章中，我们介绍了建立在LibTooling基础之上的Clang工具，它们让你能够轻松地编写操作C/C++源代码的工具。我们介绍了如下工具：Clang Tidy，Clang的剥绒机；Clang Modernizer，它自动地将旧的C++编程方式替换为新的；Clang Apply Replacements，它负责应用由其它工具创建的补丁；ClangFormat，它自动地缩进和格式化C++代码；Modularize，它让使用未标准化的C++模块框架变得容易；PPTrace，它文档化预处理器的活动；Clang Query，它让你能够测试AST匹配器。最后，我们通过演示如何创建你自己的工具结束了这一章。
-        到此本书该结束了，但是这绝对不应该是你学习旅途的终点。网络上有很多关于Clang和LLVM的额外资料，不是教程就是正式文档。还有，Clang/LLVM总是在进化并引入新的特性，值得我们继续学习。要了解这些内容，请访问LLVM的博客：http://blog.llvm.org。
-        黑客快乐！
+在下一章中，我们将介绍LLVM Just-in-Time编译框架，它让你能够按需要随时地生成代码。
