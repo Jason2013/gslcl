@@ -489,7 +489,7 @@ Core的任务是在源代码层次模拟程序的执行，利用一个visitor pa
 
 .. code-block :: bash
 
-REGISTER_MAP_WITH_PROGRAMSTATE(RS, int, ReactorState)
+    REGISTER_MAP_WITH_PROGRAMSTATE(RS, int, ReactorState)
 
 注意，这个宏的末尾没有分号。这为每个ProgramState实例关联一个新的map。第一个参数可以是任意名字，此后你将用它引用这个数据，第二个参数是map键值的类型，第三个参数是我们要存储的对象的类型（此处它是ReactorState类）。
 

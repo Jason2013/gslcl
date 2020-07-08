@@ -24,7 +24,7 @@ JIT引擎在运行时编译并且执行LLVM IR函数。在编译阶段，JIT引�
 
 .. tip ::
 
-    一篇有趣的博客文章对比了JIT编译的开源解决方案，见https://eli.thegreenplace.net/2014/01/15/some-thoughts-on-llvm-vs-libjit，它分析了LLVM和libjit，后者是一个小型的致力于JIT编译的开源项目。LLVM作为静态编译器比JIT系统更加有名，因为在JIT编译过程中，每个Pass消耗的时间是很重要的，算作程序执行的开销。LLVM基础架构更注重支持慢而强的优化，和GCC相似，而不是快而弱的优化，后者对构建一个有竞争力的JIT系统很重要。尽管如此，LLVM已经被成功地应用于JIT系统来建立Webkit JavaScript引擎的第四级LLVM（Fourth Tier LLVM, FTL）组件（http://blog.llvm.org/2014/07/ftl-webkits-llvm-based-jit.html）。因为第四级只用在长时间运行的JavaScript应用程序，激进的LLVM优化可以发挥作用，即使它们不如更低级的优化快。从理性来看，如果应用程序运行时间长，我们就可以在代价高的优化上付出更多时间。想要了解更多关于这种权衡，参看Modeling Virtual Machines Misprediction Overhead，作者Cesar et al.，发表于IISWC 2013，它分析揭示了JIT系统在多大程度上因为对不值得的代码使用了高代价的代码生成而受损失。当你的JIT系统浪费大量时间去优化一个仅执行若干次的程序片段时，这种情况就发生了。
+    一篇有趣的博客文章对比了JIT编译的开源解决方案，见 https://eli.thegreenplace.net/2014/01/15/some-thoughts-on-llvm-vs-libjit，它分析了LLVM和libjit，后者是一个小型的致力于JIT编译的开源项目。LLVM作为静态编译器比JIT系统更加有名，因为在JIT编译过程中，每个Pass消耗的时间是很重要的，算作程序执行的开销。LLVM基础架构更注重支持慢而强的优化，和GCC相似，而不是快而弱的优化，后者对构建一个有竞争力的JIT系统很重要。尽管如此，LLVM已经被成功地应用于JIT系统来建立Webkit JavaScript引擎的第四级LLVM（Fourth Tier LLVM, FTL）组件（http://blog.llvm.org/2014/07/ftl-webkits-llvm-based-jit.html）。因为第四级只用在长时间运行的JavaScript应用程序，激进的LLVM优化可以发挥作用，即使它们不如更低级的优化快。从理性来看，如果应用程序运行时间长，我们就可以在代价高的优化上付出更多时间。想要了解更多关于这种权衡，参看Modeling Virtual Machines Misprediction Overhead，作者Cesar et al.，发表于IISWC 2013，它分析揭示了JIT系统在多大程度上因为对不值得的代码使用了高代价的代码生成而受损失。当你的JIT系统浪费大量时间去优化一个仅执行若干次的程序片段时，这种情况就发生了。
 
 介绍执行引擎
 ====================================

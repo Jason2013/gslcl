@@ -11,7 +11,7 @@
 介绍Clang
 **********
 
-　　Clang项目被认为是C、C++、Objective-C官方的LLVM前端。Clang的官方网站是http://clang.llvm.org，我们在第1章，编译和安装LLVM，介绍了Clang的配置、编译和安装。
+　　Clang项目被认为是C、C++、Objective-C官方的LLVM前端。Clang的官方网站是 http://clang.llvm.org，我们在第1章（编译和安装LLVM），介绍了Clang的配置、编译和安装。
 
 　　名字LLVM令人困惑，由于它含义多样。类似地，Clang可能指代三种不同的实体：
 
@@ -73,7 +73,7 @@ RunAnalysis       运行一次或多次源代码分析
 
 　　选项-cc1触发cc1_main函数的执行（详情参见源代码文件tools/driver/cc1_main.cpp）。例如，当通过clang hello.c -o hello间接地调用-cc1时，这个函数初始化目标特定的信息，建立诊断基础设施，执行EmitObj活动。这个活动由CodeGenAction实现，FrontendAction的一个子类。此代码会实例化所有Clang和LLVM组件，指挥它们生成目标文件。
 
-　　不同前端活动的共存，让Clang能够为了编译以外的目的运行编译管线，例如静态分析。还有，你可以通过-target命令行参数为clang指定目标，根据这个目标，它将加载不同的ToolChain对象。这会改变哪些任务应该由-cc1执行，通过执行不同的前端活动，也会改变哪些任务应该由外部工具执行，使用哪些外部工具。例如，某个目标可能使用GNU汇编器和GNU链接器以完成编译，而另一个可能使用LLVM集成的汇编器和GNU链接器。如果你不清楚Clang为你的目标在使用了哪些外部工具，你总是可以借助-###选项打印驱动器命令。我们在第8章，交叉平台编译，对不同的目标作了更多的讨论。
+　　不同前端活动的共存，让Clang能够为了编译以外的目的运行编译管线，例如静态分析。还有，你可以通过-target命令行参数为clang指定目标，根据这个目标，它将加载不同的ToolChain对象。这会改变哪些任务应该由-cc1执行，通过执行不同的前端活动，也会改变哪些任务应该由外部工具执行，使用哪些外部工具。例如，某个目标可能使用GNU汇编器和GNU链接器以完成编译，而另一个可能使用LLVM集成的汇编器和GNU链接器。如果你不清楚Clang为你的目标在使用了哪些外部工具，你总是可以借助-###选项打印驱动器命令。我们在第8章（交叉平台编译），对不同的目标作了更多的讨论。
 
 程序库
 ========
@@ -86,17 +86,17 @@ RunAnalysis       运行一次或多次源代码分析
 * libclangSema：这个库用于语义分析，为AST验证提供动作
 * libclangCodeGen：这个库利用目标特定信息进行LLVM IR代码生成
 * libclangAnalysis：这个库包含静态分析的资源
-* libclangRewrite：这个库支持代码重写，为编译代码重构工具提供基础设施（详情参见第10章Clang工具和LibTooling）
+* libclangRewrite：这个库支持代码重写，为编译代码重构工具提供基础设施（详情参见第10章，Clang工具和LibTooling）
 * libclangBasic：这个库提供一系列实用工具—内存分配抽象、源代码位置、诊断，等。
 
 使用libclang
 -------------
 
-　　贯穿本章，我们将解释Clang前端的各个部分，通过实例介绍libclang的C接口。尽管它不是直接访问Clang内部类的C++ API，使用clang的很大的优势就是它的稳定；由于依赖libclang的客户程序很多，Clang团队设计它时考虑到了跟之前版本向后兼容。然而无论何时，你都应该可以随意地使用规则的C++ LLVM接口，如同在第3章工具和设计的实例中，你利用规则的C++ LLVM接口读取bitcode函数的名字。
+　　贯穿本章，我们将解释Clang前端的各个部分，通过实例介绍libclang的C接口。尽管它不是直接访问Clang内部类的C++ API，使用clang的很大的优势就是它的稳定；由于依赖libclang的客户程序很多，Clang团队设计它时考虑到了跟之前版本向后兼容。然而无论何时，你都应该可以随意地使用规则的C++ LLVM接口，如同在第3章（工具和设计）的实例中，你利用规则的C++ LLVM接口读取bitcode函数的名字。
 
 　　在你的LLVM安装文件夹的include子文件夹中，查看子文件夹clang-c，这是存放libclang C头文件的地方。为了运行本章中的例子，需要包含Index.h头文件，这是Clang C接口的主入口点。起初，开发者创建这个接口以帮助集成开发环境，例如Xcode，导航C源代码文件，生成快速代码纠正、代码补全、索引，这是主头文件的名字Index.h的由来。我们将阐明如何通过C++接口使用Clang，但是要等到本章末尾。
 
-　　不同于第3章工具和设计中的例子，那时我们用llvm-config生成待链接的LLVM程序库，对于Clang程序库我们没有这样的工具。为了链接libclang，你可以将第3章工具和设计中的Makefile改为下面的代码。和前一章一样，记得手动插入tab字符，使得Makefile能够正常工作。因为这是一个为所有示例准备的通用Makefile，注意我们用了llvm-config --libs选项，没有任何参数，这将返回完整的LLVM程序库清单。
+　　不同于第3章（工具和设计）中的例子，那时我们用llvm-config生成待链接的LLVM程序库，对于Clang程序库我们没有这样的工具。为了链接libclang，你可以将第3章（工具和设计）中的Makefile改为下面的代码。和前一章一样，记得手动插入tab字符，使得Makefile能够正常工作。因为这是一个为所有示例准备的通用Makefile，注意我们用了llvm-config --libs选项，没有任何参数，这将返回完整的LLVM程序库清单。
 
 .. code-block:: bash
 
@@ -150,7 +150,7 @@ RunAnalysis       运行一次或多次源代码分析
 
     $ export LD_LIBRARY_PATH=$(LD_LIBRARY_PATH):/your/llvm/installation/lib
 
-　　以你的LLVM安装位置的完整路径替代/your/llvm/installation，参考第1章编译和安装LLVM。
+　　以你的LLVM安装位置的完整路径替代/your/llvm/installation，参考第1章（编译和安装LLVM）。
 
 理解Clang诊断
 =============
@@ -235,7 +235,7 @@ RunAnalysis       运行一次或多次源代码分析
 
 .. note::
 
-    实现我们自己的Clang工具的困难之处，在于缺少驱动器的参数猜测能力，它提供充足的参数以在你的系统上处理源文件。举例来说，如果你在开发Clang插件，你不会有这样的忧虑。为了解决这个问题，你可使用编译器命令数据库，它给出恰当的参数集，用以处理你想要分析的每个输入源文件，见第10章Clang工具和LibTooling中的讨论。这种情况，我们可以用CMake生成数据库。不过，在我们的例子中，我们自己提供这些参数。
+    实现我们自己的Clang工具的困难之处，在于缺少驱动器的参数猜测能力，它提供充足的参数以在你的系统上处理源文件。举例来说，如果你在开发Clang插件，你不会有这样的忧虑。为了解决这个问题，你可使用编译器命令数据库，它给出恰当的参数集，用以处理你想要分析的每个输入源文件，见第10章（Clang工具和LibTooling）中的讨论。这种情况，我们可以用CMake生成数据库。不过，在我们的例子中，我们自己提供这些参数。
 　　
 　　信息经过解析并存储在CXTranslationUnit C数据结构之后，我们实现了一个循环，遍历Clang产生的所有诊断，并把它们输出到屏幕。为此，首先利用clang_getNumDiagnostics()获取解析这个文件时产生的诊断数量，并决定循环的界限（参见 http://clang.llvm.org/doxygen/group__CINDEX__DIAG.html）。然后，对于每次循环遍历，利用clang_getDiagnostic()获取当前的诊断，利用clang_getDiagnosticCategoryText()获取描述这个诊断类型的字符串，利用clang_getDiagnosticSpelling()获取显示给用户的消息，利用clang_getDiagnosticLocation()获取它所发生的准确代码位置。我们还利用clang_getDiagnosticSeverity()获取代表此诊断的严重程度的枚举数字（NOTE，WARNING，EXTENSION，EXTWARN，或ERROR），但是为简单起见，我们将它变换为无符号数，并当作数字打印它。
 
@@ -276,7 +276,6 @@ RunAnalysis       运行一次或多次源代码分析
 =========
 
 　　前端的第一个步骤处理源代码的文本输入，将语言结构分解为一组单词和标记，去除注释、空白、制表符等。每个单词或者标记必须属于语言子集，语言的保留字被变换为编译器内部表示。文件include/clang/Basic/TokenKinds.def定义了保留字。例如，在下面的TokenKinds.def摘要中，两个已知的C/C++标记，保留字while和符号<，它们的定义被高亮了。
-
 
 .. code-block:: cpp
 
@@ -460,11 +459,11 @@ RunAnalysis       运行一次或多次源代码分析
 .. figure:: ch04/front_end_1.png
    :align: center
 　　
-　　这是Adrian Cable的代码，22届International Obfuscated C Code Contest（IOCCC）的一位获奖者，这个竞赛允许我们依照Create Commons Attribute-Share Alike 3.0许可证重现参赛者的源代码，供我们消遣。这是一个8086模拟器。如果你想学习如何格式化此代码，阅读第10章Clang工具和LibTooling中的ClangFormat小节。为了展开宏，你也可以用-E选项运行编译器驱动器，这将只运行预处理器，然后中断编译，不作进一步分析。
+　　这是Adrian Cable的代码，22届International Obfuscated C Code Contest（IOCCC）的一位获奖者，这个竞赛允许我们依照Create Commons Attribute-Share Alike 3.0许可证重现参赛者的源代码，供我们消遣。这是一个8086模拟器。如果你想学习如何格式化此代码，阅读第10章（Clang工具和LibTooling）中的ClangFormat小节。为了展开宏，你也可以用-E选项运行编译器驱动器，这将只运行预处理器，然后中断编译，不作进一步分析。
 
 　　预处理器允许我们将源代码转换为难以理解的文本片段，这警示我们该适度地使用宏。这是良好的建议，题外话。词法器预处理标记流，处理预处理指示，例如宏和pragma。预处理器用一个符号表存放定义的宏，当一个宏实例出现时，用存储在符号表中的标记替代当前的宏实例。
 
-　　如果你安装了扩展工具（第2章外部项目），你可以在命令行运行pp-trace。这个工具揭露预处理器的活动。
+　　如果你安装了扩展工具（第2章，外部项目），你可以在命令行运行pp-trace。这个工具揭露预处理器的活动。
 
 　　考虑下面的例子pp.c：
 
@@ -686,7 +685,7 @@ RunAnalysis       运行一次或多次源代码分析
 
 .. note::
 
-    虽然可以用此代码结构建立分析，但是，如果你感到你的分析相当复杂，需要一种像控制流图（CFG）这样的结构，就不要用cursor或libclang——将你的分析实现为一个Clang插件更合适，它直接调用Clang C++ API用AST创建CFG（参见http://clang.llvm.org/docs/ClangPlugins.html和CFG::buildCFG方法）。通常来说，直接根据AST建立分析比利用CFG建立分析来得更加困难。你还应该看一看第9章Clang静态分析器，它解释如何建立强大的Clang静态分析。
+    虽然可以用此代码结构建立分析，但是，如果你感到你的分析相当复杂，需要一种像控制流图（CFG）这样的结构，就不要用cursor或libclang——将你的分析实现为一个Clang插件更合适，它直接调用Clang C++ API用AST创建CFG（参见http://clang.llvm.org/docs/ClangPlugins.html和CFG::buildCFG方法）。通常来说，直接根据AST建立分析比利用CFG建立分析来得更加困难。你还应该看一看第9章（Clang静态分析器），它解释如何建立强大的Clang静态分析。
 
 　　在前面的例子中，我们忽略了client_data和parent参数。我们简单地利用clang_getCursorKind()函数检测当前cursor是否指向一个C函数声明（CXCursor_FunctionDecl）或者C++方法（CXCursor_CXXMethod）。当我们确信正在访问正确的cursor时，我们会利用两个函数从cursor提取信息：用clang_getCursorSpelling()得到这个AST节点对应的代码，用clang_getCursorLocation()得到和它关联的CXSourceLocation对象。接着，打印这些信息——所用的方式和之前诊断项目所用的相似，并返回CXChildVisit_Continue以结束函数。我们之所以用这个选项，是因为我们确信不存在嵌套的函数声明，继续遍历访问这个cursor的子节点是没有意义的。
 

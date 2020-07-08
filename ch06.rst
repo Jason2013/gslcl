@@ -53,7 +53,7 @@ llc是后端的主要工具。如果我们带着前面一章的sum.bc bitcode继
 
     $ llc -march=mips -filetype=obj sum.bc -o sum.o
 
-如果你运行命令llc -version，llc会显示所支持的-march选项的完整列表。注意，这个列表和LLVM配置（详情见第1章（编译和安装LLVM））中用到的--enable-targets选项兼容。
+如果你运行命令llc -version，llc会显示所支持的-march选项的完整列表。注意，这个列表和LLVM配置（详情见第1章，编译和安装LLVM）中用到的--enable-targets选项兼容。
 
 然而要注意的是，我们刚才强制让llc使用一个不同的后端为bitcode生成代码，这个bitcode起初是为x86编译的。在第5章（LLVM中间表示）中，我们解释了IR具有目标相关的一面，尽管它是为所有后端设计的共同语言。因为C/C++语言具有目标相关的属性，所以这种相关性会体现在LLVM IR中。
 
@@ -127,7 +127,7 @@ llc的非共享代码是相当小的（见tools/llc/llc.cpp），其大部分功
 学习LLVM后端如何利用TableGen
 ***********************************
 
-LLVM使用记录导向语言TableGen来描述若干编译器阶段用到的信息。例如，在第4章前端中，我们简单讨论了如何用TableGen文件（以.td为扩展名）描述前端的不同诊断信息。最初，LLVM团队开发TableGen是为了帮助程序员编写LLVM后端的。尽管代码生成器程序库的设计强调清楚地分离不同的目标特性，例如，用不同的class表示寄存器信息和指令，但是最终后端程序员写出的代码不得不在若干不同的文件中表示相同的某种机器特征。这种方法的问题在于，不仅付出额外的努力编写后端代码，而且在代码中引入了信息冗余，必须手工同步。
+LLVM使用记录导向语言TableGen来描述若干编译器阶段用到的信息。例如，在第4章（前端）中，我们简单讨论了如何用TableGen文件（以.td为扩展名）描述前端的不同诊断信息。最初，LLVM团队开发TableGen是为了帮助程序员编写LLVM后端的。尽管代码生成器程序库的设计强调清楚地分离不同的目标特性，例如，用不同的class表示寄存器信息和指令，但是最终后端程序员写出的代码不得不在若干不同的文件中表示相同的某种机器特征。这种方法的问题在于，不仅付出额外的努力编写后端代码，而且在代码中引入了信息冗余，必须手工同步。
 
 例如，你想修改后端如何处理一个寄存器，将需要修改代码中几处不同的部分：在寄存器分配器中说明支持哪些寄存器类型；在汇编打印器中体现如何打印这个寄存器；在汇编解析器中体现它在汇编语言代码中如何解析；以及在反汇编器中，它需要知道寄存器的编码方式。这样，维护一个后端的代码变得很复杂。
 
@@ -256,7 +256,7 @@ GR16寄存器类包含所有的16位寄存器和它们各自的寄存器分配�
 指令
 ========================
 
-指令格式和指令分别在<Target>InstrFormats.td和<Target>InstInfo.td文件中被定义。指令格式包含所必需的指令编码字段，用于写二进制形式的指令，而指令记录表示指令，一条记录表示一条指令。你可以创建中间指令类，就是用于派生指令记录的TableGen类，以析出公共特性因子，例如相似的数据处理指令的共同编码方式。然而，每个指令或者格式必须是Instruction TableGen类的直接或间接的子类，Instruction类在include/llvm/Target/Target.td中被定义。它的字段告诉显示了TableGen后端期望在指令记录中找到什么内容：
+指令格式和指令分别在<Target>InstrFormats.td和<Target>InstInfo.td文件中被定义。指令格式包含所必需的指令编码字段，用于写二进制形式的指令，而指令记录表示指令，一条记录表示一条指令。你可以创建中间指令类，就是用于派生指令记录的TableGen类，以析出公共特性因子，例如相似的数据处理指令的共同编码方式。然而，每个指令或者格式必须是Instruction TableGen类的直接或间接的子类，Instruction类在include/llvm/Target/Target.td中被定义。它的字段显示了TableGen后端期望在指令记录中找到什么内容：
 
 .. code-block :: cpp
 
@@ -309,12 +309,12 @@ AsmString汇编通过$记号引用指定的操作数："xnor $b, $c, $dst"。Pat
 
 多个TableGen后端利用指令记录的信息以履行它们的职能，从相同的指令记录生成不同的.inc文件。这跟TablenGen的目标是一致的，即创建一个中央仓库，利用它给后端的各个部分生成代码。下面的每个文件是由不同的TableGen后端生成的：
 
-•	``<Target>GenDAGISel.inc``：这个文件利用指令记录中patterns字段的信息以输出选择SelectionDAG数据结构的指令的代码。<Target>ISelDAGtoDAG.cpp文件包含这个文件。
-•	``<Target>GenInstrInfo.inc``：这个文件包含列出目标的所有指令的枚举，除了其它的描述指令的表。<Target>InstrInfo.cpp、<Target>InstrInfo.h、<Target>MCTargetDesc.cpp、和<Target>MCTargetDesc.h包含这个文件。然而，每个文件会在包含TableGen生成的文件之前定义一组特定的宏，改变了这个文件如何在每个上下文中被解析和使用。
-•	``<Target>GenAsmWriter.inc``：这个文件包含映射字符串的代码，该字符串被用来打印每个指令的汇编。<Target>AsmPrinter.cpp文件包含这个文件。
-•	``<Target>GenCodeEmitter.inc``：这个文件包含这样的函数，它们为每条指令映射并输出二进制代码，从而生成机器代码以填写目标文件。<Target>CodeEmitter.cpp包含这个文件。
-•	``<Target>GenDisassemblerTables.inc``：这个文件实现这样的表和算法，它们能够解码一个字节序列并识别出它表示的目标指令。它用于实现反汇编工具，<Target>Disassembler.cpp文件包含它。
-•	``<Target>GenAsmMatcher.inc``：这个文件实现目标指令的汇编器的解析器。<Target>AsmParser.cpp文件包含它两次，每次都有一组不同的预处理宏，从而改变如何解析这个文件。
+•	<Target>GenDAGISel.inc：这个文件利用指令记录中patterns字段的信息以输出选择SelectionDAG数据结构的指令的代码。<Target>ISelDAGtoDAG.cpp文件包含这个文件。
+•	<Target>GenInstrInfo.inc：这个文件包含列出目标的所有指令的枚举，除了其它的描述指令的表。<Target>InstrInfo.cpp、<Target>InstrInfo.h、<Target>MCTargetDesc.cpp、和<Target>MCTargetDesc.h包含这个文件。然而，每个文件会在包含TableGen生成的文件之前定义一组特定的宏，改变了这个文件如何在每个上下文中被解析和使用。
+•	<Target>GenAsmWriter.inc：这个文件包含映射字符串的代码，该字符串被用来打印每个指令的汇编。<Target>AsmPrinter.cpp文件包含这个文件。
+•	<Target>GenCodeEmitter.inc：这个文件包含这样的函数，它们为每条指令映射并输出二进制代码，从而生成机器代码以填写目标文件。<Target>CodeEmitter.cpp包含这个文件。
+•	<Target>GenDisassemblerTables.inc：这个文件实现这样的表和算法，它们能够解码一个字节序列并识别出它表示的目标指令。它用于实现反汇编工具，<Target>Disassembler.cpp文件包含它。
+•	<Target>GenAsmMatcher.inc：这个文件实现目标指令的汇编器的解析器。<Target>AsmParser.cpp文件包含它两次，每次都有一组不同的预处理宏，从而改变如何解析这个文件。
 
 理解指令选择过程
 ***************************
@@ -347,9 +347,9 @@ SelectionDAG对象有一个特别的标记基本块入口的EntryToken，它提�
 
 在示意图所示的例子中，我们可能观察到下面的语义：
 
-•	``Register``：这个节点可能引用虚拟或者（目标特定的）物理的寄存器。
-•	``CopyFromReg``：这个节点复制一个在当前基本块作用域之外定义的寄存器——在我们的例子中，它复制了一个函数的参数。
-•	``CopyToReg``：这个节点将一个值复制到一个特定的寄存器，可是不提供任何具体的值让其它节点使用它。然而，这个节点产生一个链的值（Other类型），和不生成具体的值的其它节点构成链。举例来说，为了使用被写到EAX的值，X86ISD::RET_FLAG节点使用由Register (%EAX)提供的i32结果，并且还接收由CopyToReg产生的链，这样确保%EAX是通过CopyToReg更新了的，因为这个链会强制CopyToReg被安排在X86ISD::RET_FLAG之前。
+•	Register：这个节点可能引用虚拟或者（目标特定的）物理的寄存器。
+•	CopyFromReg：这个节点复制一个在当前基本块作用域之外定义的寄存器——在我们的例子中，它复制了一个函数的参数。
+•	CopyToReg：这个节点将一个值复制到一个特定的寄存器，可是不提供任何具体的值让其它节点使用它。然而，这个节点产生一个链的值（Other类型），和不生成具体的值的其它节点构成链。举例来说，为了使用被写到EAX的值，X86ISD::RET_FLAG节点使用由Register (%EAX)提供的i32结果，并且还接收由CopyToReg产生的链，这样确保%EAX是通过CopyToReg更新了的，因为这个链会强制CopyToReg被安排在X86ISD::RET_FLAG之前。
 
 想要深入了解SelectionDAG类的细节，请参考llvm/include/llvm/CodeGen/SelectionDAG.h头文件。对于节点的结果类型，你应该参考llvm/include/llvm/CodeGen/ValueTypes.h头文件。头文件llvm/include/llvm/CodeGen/ISDOpcodes.h定义了目标无关的节点，而头文件lib/Target/<Target>/<Target>ISelLowering.h定义了目标特定的节点。
 
@@ -710,7 +710,7 @@ default分配器被映射为这四种方法的其中之一，根据当前的优�
 
 .. note ::
 
-    只有当LLVM以debug模式编译（通过在配置时刻设置--disable-optimized）后，才能使用llc程序的选项-debug或者-debug-only=<name>。你可以在第1章（编译和安装LLVM）的Building and installing LLVM小节找到更多相关内容。
+    只有当LLVM以debug模式编译（通过在配置时刻设置--disable-optimized）后，才能使用llc程序的选项-debug或者-debug-only=<name>。你可以在第1章（编译和安装LLVM）的**Building and installing LLVM**小节找到更多相关内容。
 
 在任何编译器中，寄存器分配和指令调度都是天生的敌人。寄存器分配的任务是尽可能让活跃区域短一点，减少冲突图的边的数目，而减少所需寄存器的数目，以避免挤出（spill）。因而，寄存器分配器喜欢以串行的模式排列指令（让指令紧跟在其所依赖指令的后面），因为用这种方法代码所用的寄存器相对较少。指令调度的任务是相反的：为了提升指令级别的并行，需要尽可能地让很多无关而并行的运算保持活跃，要用很多寄存器保存中间值，增加活跃区域之间冲突的数量。设计一个有效的算法来协同地处理指令调度和寄存器分配，是一个开放的研究课题。
 
@@ -910,7 +910,7 @@ MC框架让LLVM能够为经典的目标文件阅读器提供可选择的工具�
     FunctionPass *createSparcDelaySlotFillerPass(TargetMachine &TM);
     FunctionPass *createMyCustomMachinePass();
 
-下面让我们用LLVM编译系统编译新的SPARC后端。如果你还没有配置你的LLVM编译系统，就参考第1章，编译和安装LLVM。如果你已经有了配置项目的build文件夹，就进入这个文件夹，运行make以编译新的后端。接着，你可以安装包含修改了的SPARC后端的新的LLVM，或者依你所愿，只是从你的build文件夹运行新的llc二进制程序，而不运行make install：
+下面让我们用LLVM编译系统编译新的SPARC后端。如果你还没有配置你的LLVM编译系统，就参考第1章（编译和安装LLVM）。如果你已经有了配置项目的build文件夹，就进入这个文件夹，运行make以编译新的后端。接着，你可以安装包含修改了的SPARC后端的新的LLVM，或者依你所愿，只是从你的build文件夹运行新的llc二进制程序，而不运行make install：
 
 .. code-block:: bash
 

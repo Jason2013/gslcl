@@ -3,7 +3,7 @@
 
 　　核心LLVM和Clang代码库之外的项目是外部项目，需要单独下载。在本章中，我们介绍多种官方LLVM的外部项目，解释如何编译安装它们。只关注核心LLVM工具的读者可以跳过本章，想阅读时再回来。
   
-　　在本章中，我们将介绍以下项目，以及如何安装它们：
+　　在本章中，我们将介绍以下项目，包括如何安装它们：
 
 * Clang extra tools
 * Compiler-RT
@@ -35,7 +35,7 @@
 * Modularize：它帮你找出适合组成一个模块（module）的C++头文件，模块是C++标准委员会目前正在讨论的一个新概念（请参考第10章，Clang工具和LibTooling，以了解更多信息）
 * PPTrace：这是一个跟踪Clang C++预处理器的活动的简单工具
 
-　　至于如何运用这些工具，以及如何编译我们自己的工具，第10章，Clang工具和LibTooling，将详细地介绍它们。
+　　至于如何运用这些工具，以及如何编译我们自己的工具，第10章（Clang工具和LibTooling）将详细地介绍它们。
   
 编译和安装Clang附加（extra）工具
 =============================
@@ -62,7 +62,7 @@
     $ cd llvm/tools/clang/tools
     $ git clone http://llvm.org/git/clang-tools-extra.git extra
     
-　　把源代码放在Clang树中之后，你必须用Cmake或者自动工具生成的configure脚本去编译它，参考第1章，编译和安装LLVM。按如下方式运行clang-modernize工具，可测试是否安装成功：
+　　把源代码放在Clang树中之后，你必须用Cmake或者自动工具生成的configure脚本去编译它，参考第1章（编译和安装LLVM）。按如下方式运行clang-modernize工具，可测试是否安装成功：
 
 .. code-block:: bash
 
@@ -182,7 +182,7 @@
 
     $ git clone http://llvm.org/git/dragonegg.git
     
-　　为了编译和安装，你需要提供LLVM安装路径。LLVM的版本必须和正在安装的DragonEgg的版本匹配。假设安装路径前缀是/usr/local/llvm（同第1章编译和安装LLVM），假设GCC 4.6已安装并且你的shell变量PATH已包含它的路径，那么你可以使用以下命令：
+　　为了编译和安装，你需要提供LLVM安装路径。LLVM的版本必须和正在安装的DragonEgg的版本匹配。假设安装路径前缀是/usr/local/llvm（同第1章，编译和安装LLVM），假设GCC 4.6已安装并且你的shell变量PATH已包含它的路径，那么你可以使用以下命令：
 
 .. code-block:: bash
 
@@ -272,7 +272,7 @@
     $ cd llvm/projects
     $ git clone http://llvm.org/git/llvm-project/test-suite.git
     
-　　为了使用这个测试套件，你需要重新生成LLVM编译文件。这种情况有点特殊，不能使用CMake。你必须让经典的configure脚本在测试套件目录中工作。请仿照第1章编译和安装LLVM中描述的配置步骤。
+　　为了使用这个测试套件，你需要重新生成LLVM编译文件。这种情况有点特殊，不能使用CMake。你必须让经典的configure脚本在测试套件目录中工作。请仿照第1章（编译和安装LLVM）中描述的配置步骤。
   
 　　这个测试套件有一套Makefile，测试和检查benchmark。你也可以提供定制的Makefile，评估定制的程序。将定制Makefile放在测试套件源代码目录中，命名模板：llvm/projects/test-suite/TEST.<custom>.Makefile，其中标签<custom>必须替换为你选择的名字。例子：llvm/projects/test-suite/TEST.example.Makefile。
 
@@ -280,7 +280,7 @@
 
     你需要重新生成LLVM编译文件，以使定制或修改的Makefile生效。
 
-　　配置过程中，将会在LLVM目标文件目录中创建一个目录，测试套件的程序和benchmark将在其中运行。若要运行和测试example Makefile，则进入第1章编译和安装LLVM中提到的目标文件目录，执行下面的命令：
+　　配置过程中，将会在LLVM目标文件目录中创建一个目录，测试套件的程序和benchmark将在其中运行。若要运行和测试example Makefile，则进入第1章（编译和安装LLVM）中提到的目标文件目录，执行下面的命令：
 
 .. code-block:: bash
 
@@ -322,7 +322,7 @@
 
     $ sudo apt-get install swig libedit-dev python
 
-　　记住，像本章介绍的其它项目一样，你需要重新生成LLVM编译文件，以使LLDB能够编译。请仿照第1章编译和安装LLVM中描述的从源代码编译LLVM的步骤。
+　　记住，像本章介绍的其它项目一样，你需要重新生成LLVM编译文件，以使LLDB能够编译。请仿照第1章（编译和安装LLVM）中描述的从源代码编译LLVM的步骤。
   
 　　当你新安装lldb之后，为了简单测试，以参数-v运行它，打印它的版本：
   
@@ -431,8 +431,7 @@ LLDB调试练习
     #include <...> search starts here:
      /usr/include/c++/4.7.0
      /usr/include/c++/4.7.0/x86_64-pc-linux-gnu
-
-  （省略后续条目）
+    (Subsequent entries omitted)
  
 　　通常地，前两条路径指明libsupc++头文件在何处。为了验证，查看一个libsupc++头文件是否存在，例如bits/exception_ptr.h：
   

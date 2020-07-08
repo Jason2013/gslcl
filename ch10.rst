@@ -424,7 +424,7 @@ PPTrace
 
     *Engages in a tight little dance with the lexer to efficiently preprocess tokens.（与词法分析器紧密协作以高效地预处理标记。）*
 
-如第4章前端已经指出的那样，Clang中的lexer类执行源代码文件分析的第一步。它将大块的文本识别成词汇，之后由解析器作解释。lexer没有语义的信息，语义分析是解析器的责任，也不关心包含的头文件和宏展开，这是预处理器的责任。
+如第4章（前端）已经指出的那样，Clang中的lexer类执行源代码文件分析的第一步。它将大块的文本识别成词汇，之后由解析器作解释。lexer没有语义的信息，语义分析是解析器的责任，也不关心包含的头文件和宏展开，这是预处理器的责任。
 
 Clang的pp-trace独立工具输出预处理过程的踪迹。它实现此功能的方法是实现clang::PPCallbacks接口的回调函数。它首先将自己注册为预处理器的观察员，然后启动Clang以分析输入文件。对于预处理器的每个动作，例如解释#if指令，导入模块，包含头文件，等等，这个工具会在屏幕上打印消息。
 
@@ -629,7 +629,7 @@ Clang项目为使用者提供了三种接口，以利用Clang的特性和它的�
         // ...
     }
 
- 你的主要代码从ParseCommandLineOptions函数开始，它来自llvm::cl名字空间（command-line用途）。这个函数为你不厌其烦地解析argv中的每个选项 。
+你的主要代码从ParseCommandLineOptions函数开始，它来自llvm::cl名字空间（command-line实用程序）。这个函数为你不厌其烦地解析argv中的每个选项 。
 
 .. note ::
 
@@ -829,7 +829,7 @@ Clang Query返回四个匹配，因为我们的代码确实含有四个方法调
 
 .. code-block :: cpp
 
-using namespace clang::ast_matchers;
+    using namespace clang::ast_matchers;
 
 第二个头文件是使用实际的查找器机制所必须的，马上我们会介绍它。从之前停止的地方继续编写main函数，我们开始添加剩余的代码：
 
