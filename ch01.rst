@@ -7,7 +7,7 @@ LLVM的新手使用者必须明白，基本的LLVM编译器包括LLVM和Clang的
 
 .. note::
 
-   写作本书的时候，LLVM 3.5还没有发布。尽管这本书讲解LLVM 3.4，但是我们计划在2014年9月的第三个星期发布一个附录，将本书中的例子更新到LLVM 3.5，让你能够以LLVM最新的版本练习本书的内容。这个附录将可以从 `https://www.packtpub.com/sites/default/files/downloads/6924OS_Appendix.pdf <https://www.packtpub.com/sites/default/files/downloads/6924OS_Appendix.pdf>`_ 得到。
+    写作本书的时候，LLVM 3.5还没有发布。尽管这本书讲解LLVM 3.4，但是我们计划在2014年9月的第三个星期发布一个附录，将本书中的例子更新到LLVM 3.5，让你能够以LLVM最新的版本练习本书的内容。这个附录将可以从 `https://www.packtpub.com/sites/default/files/downloads/6924OS_Appendix.pdf <https://www.packtpub.com/sites/default/files/downloads/6924OS_Appendix.pdf>`_ 得到。
 
 本章将讨论以下内容：
 
@@ -413,6 +413,10 @@ Windows和Microsoft Visual Studio
 
 7. 在配置完成之后，点击Generate按钮。这样，Visual Studio solution文件，LLVM.sln，会被写到指定的build目录中。进入这个目标，双击这个文件；它会在Visual Studio中打开LLVM solution。
 8. 要想自动地编译并安装LLVM/Clang，在左边的树视图中，展开CMakePredefinedTargets，右击INSTALL，选择Build选项。预定义的INSTALL目标会指示系统编译并安装所有LLVM/Clang的工具和库，如下面的截屏所示：
+
+.. figure:: ch01/vs_build_llvm.png
+   :align: center
+
 9. 要想有选择地编译并安装指定的工具和库，就在左侧的树视图窗口中选择相应的项，右击它并选择Build选项。
 10. 将LLVM二进制安装目录添加到系统的PATH环境变量。
 
@@ -426,24 +430,45 @@ Windows和Microsoft Visual Studio
 Mac OS X和Xcode
 ================
 
-    尽管利用前面描述的常规Unix指令可以为Mac OS X编译LLVM，但是也可以利用Xcode：
+尽管利用前面描述的常规Unix指令可以为Mac OS X编译LLVM，但是也可以利用Xcode：
 
 1. 获取Xcode的副本。
 2. 下载并安装官方CMake工具的二进制发布，下载地址 http://www.cmake.org 。不要忘记勾选Add CMake to the system PATH for all users选项。
 
+.. figure:: ch01/mac_cmake.png
+   :align: center
+
 3. CMake能够生成Xcode的项目文件。首先，运行cmake-gui图形工具。然后，如前面的截屏所示，点击Browse Source按钮并选择LLVM源代码目录。接着，点击Browse Build按钮并选择存放CMake生成文件的目录，Xcode会使用这些文件。
 4. 点击Add Entry，定义CMAKE_INSTALL_PREFIX以指定LLVM工具的安装路径。
 
+.. figure:: ch01/mac_cmake_prefix.png
+   :align: center
+
 5. 还有，支持的目标集合可以通过LLVM_TARGETS_TO_BUILD定义。可选地，你可以添加任意其它的定义CMake参数的项，我们之前讨论过这些参数。
+
+.. figure:: ch01/mac_cmake_targets.png
+   :align: center
 
 6. Xcode不支持生成LLVM位置无关代码（PIC，Position Independent Code）库。点击Add Entry并添加LLVM_ENABLE_PIC变量，它是BOOL类型，空着勾选框，如下面的截屏所示：
 
+.. figure:: ch01/mac_cmake_pic.png
+   :align: center
+
 7. 点击Configure按钮。弹出的对话框询问这个项目的生成器和要用的编译器。选择Xcode和Use default native compilers。点击Finish按钮结束配置过程，如下面的截屏所示：
+
+.. figure:: ch01/mac_cmake_config.png
+   :align: center
 
 8. 完成配置之后，点击Generate按钮。随即，LLVM.xcodeproj文件会被写到build目录中，这个目录是之前设置的。进入这个目录并双击这个文件，这样就会在Xcode中打开LLVM项目。
 9. 为了编译并安装LLVM/Clang，选择install方案。
 
+.. figure:: ch01/xcode_install_llvm.png
+   :align: center
+
 10. 接下来，点击Product菜单，然后选择Build选项，如下面的截屏所示：
+
+.. figure:: ch01/xcode_build_llvm.png
+   :align: center
 
 11. 将LLVM二进制文件的安装目录添加到系统的PATH环境变量中。
 
