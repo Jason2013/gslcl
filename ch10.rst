@@ -1,7 +1,7 @@
 第10章 Clang工具和LibTooling
 ####################################
 
-在这一章，我们将看到有多少工具以库的形式利用Clang前端，为了不同的目的而操作C/C++程序。特别地，它们都依赖LibTooling，一个Clang库，它使人们可以编写独立的工具。在这种情况下，你可以设计一个完全属于你自己的工具，利用Clang的解析能力，让你的用户可以直接调用你的工具，而不是编写一个插件以适应Clang编译管线。这一章所展示的工具可以在Clang额外工具包中找到；参考第2章（外部项目）获得如何安装它们的信息。我们将以一个可用的例子结束这一章，演示如何创建你自己的代码重构工具。我们将讨论以下话题：
+在这一章，我们将看到有多少工具以库的形式利用Clang前端，为了不同的目的而操作C/C++程序。特别地，它们都依赖LibTooling，一个Clang库，它使人们可以编写独立的工具。在这种情况下，你可以设计一个完全属于你自己的工具，利用Clang的解析能力，让你的用户可以直接调用你的工具，而不是编写一个插件以适应Clang编译管线。这一章所展示的工具可以在Clang额外工具包中找到；参考第2章（外部项目）了解如何安装它们。我们将以一个可用的例子结束这一章，演示如何创建你自己的代码重构工具。我们将讨论以下话题：
 
 •	生成编译命令database
 •	理解并使用若干Clang工具，它们依赖LibTooling，例如Clang Tidy、Clang Modernizer、Clang Apply Replacements、ClangFormat、Modularize、PPTrace、和Clang Query
@@ -635,7 +635,7 @@ Clang项目为使用者提供了三种接口，以利用Clang的特性和它的�
 
     典型地，基于LibTooling的工具会使用CommonOptionsParser对象，以轻松解析通用的选项，它们为所有重构工具所共用（参见http://clang.llvm.org/doxygen/classclang_1_1tooling_1_1CommonOptio nsParser.html作为一个代码示例）。在这个例子中，我们用低层级的ParseCommandLineOptions()函数来说明确切地我们打算解析哪些参数，并训练你在其它它们不使用LibTooling的工具中使用它。然而，自由地去使用CommonOptionsParser，让你的工作变得轻松（以不同的方式编写此工具, 作为练习）。
 
-你将证实，所有的LLVM工具都会使用cl名字 空间提供的功能（http://llvm.org/docs/doxygen/html/namespacellvm_1_1cl.html），定义我们的工具在命令行中识别哪些参数，实在是简单。为此，我们声明新的模板类型opt和list的变量：
+你将证实，所有的LLVM工具都会使用cl名字空间提供的功能（http://llvm.org/docs/doxygen/html/namespacellvm_1_1cl.html），定义我们的工具在命令行中识别哪些参数，实在是简单。为此，我们声明新的模板类型opt和list的变量：
 
 .. code-block :: bash
 

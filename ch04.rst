@@ -264,7 +264,7 @@ RunAnalysis       运行一次或多次源代码分析
 
 　　我们看到，这两个诊断由前端的不同阶段产生，语义和（语法）解析阶段。我们将在下一节探索它们。
 
-学习Clang前端阶段
+通过Clang学习前端的步骤
 *****************
 
 　　为了将源代码程序转换为LLVM IR bitcode，源代码必须经历几个中间步骤。下图阐明了这些中间步骤，它们是这一节的主题。
@@ -309,7 +309,7 @@ RunAnalysis       运行一次或多次源代码分析
 
     int min(int a, int b) {
       if (a < b)
-    　　return a;
+    　　  return a;
       return b;
     }
 
@@ -939,7 +939,7 @@ RunAnalysis       运行一次或多次源代码分析
 总结
 *****
 
-　　在本章中，我们介绍了Clang前端。我们解释了Clang前端程序库、编译器驱动器、和clang -cc1工具中的实际编译器之间的区别。我们还讨论了诊断，演示了一个libclang的小程序，输出诊断信息。接着，我们开启前端之旅，学习了所有的步骤：词法器、解析器、语义分析和代码生成，展示了Clang如何实现这些阶段。最后，我们以一个例子结束了本章，这个例子演示了怎么编写一个简单的编译器驱动器，激活所有的前端阶段。如果你有意阅读关于AST更多的资料，这里有一份好的社区文档：http://clang.llvm.org/docs/IntroductionToTheClangAST.html。如果你有意阅读关于Clang设计的更多的资料，在你阅读实际的源代码之前，你应该阅读http://clang.llvm.org/docs/InternalsManual.html。
+　　在本章中，我们介绍了Clang前端。我们解释了Clang前端程序库、编译器驱动器、和clang -cc1工具中的实际编译器之间的区别。我们还讨论了诊断，演示了一个libclang的小程序，输出诊断信息。接着，我们开启前端之旅，学习了所有的步骤：词法器、解析器、语义分析和代码生成，展示了Clang如何实现这些步骤。最后，我们以一个例子结束了本章，这个例子演示了怎么编写一个简单的编译器驱动器，激活所有的前端阶段。如果你有意阅读关于AST更多的资料，这里有一份好的社区文档：http://clang.llvm.org/docs/IntroductionToTheClangAST.html。如果你有意阅读关于Clang设计的更多的资料，在你阅读实际的源代码之前，你应该阅读http://clang.llvm.org/docs/InternalsManual.html。
 
 　　在下一章，我们将进入编译流水线的下一步：LLVM中间表示。
 
