@@ -140,7 +140,7 @@ LLVM使用记录导向语言TableGen来描述若干编译器阶段用到的信�
     在计算机架构研究领域，完全自动地为处理器生成后端、模拟器、和硬件综合描述文件已经成为一个长期追求的目标，并且仍然是一个开放的问题。典型的方法是用一个类似TableGen的声明描述语言表示所有的机器信息，然后利用工具派生出所需要的各种软件（和硬件），并评估、测试处理器架构。如同期望的那样，这是非常困难的，和手工编写的工具相比，自动生成的工具的质量不尽如人意。LLVM TableGen的方法是辅助程序员完成较小的代码编写任务，仍然给予程序员完整的控制权，让他们用C++代码来实现任意定制的逻辑。
 
 语言
-********************
+========================
 
 TableGen语言由定义和类（class）组成，它们用于建立记录。定义def用于根据class和multiclass关键字实例化记录。这些记录由TableGen后端进一步处理，为以下部件生成域特定的信息：代码生成器、Clang诊断、Clang驱动器选项、和静态分析器检查器。因此，记录所表示的实际意思由后端给出，而记录仅仅存放信息。
 
@@ -161,7 +161,11 @@ SUB指令只有第1种形式。看下面insns.td文件的示例代码：
     }
     def SUB : Insn<0x00, 0>;
     defm ADD : RegAndImmInsn<0x01>;
-    Insn class表示一个常规指令，RegAndImmInsn multiclass表示上面所提到的形式的指令。def SUB定义了SUB记录，而defm ADD定义了两个记录：ADDrr和ADDri。利用llvm-tblgen工具，你可以处理一个.td文件并检查结果记录：
+
+Insn class表示一个常规指令，RegAndImmInsn multiclass表示上面所提到的形式的指令。def SUB定义了SUB记录，而defm ADD定义了两个记录：ADDrr和ADDri。利用llvm-tblgen工具，你可以处理一个.td文件并检查结果记录：
+
+.. code-block :: cpp
+
     $ llvm-tblgen -print-records insns.td
     ------------- Classes -----------------
     class Insn<bits<4> Insn:MajOpc = { ?, ?, ?, ? }, bit Insn:MinOpc = ?> {
@@ -186,12 +190,12 @@ SUB指令只有第1种形式。看下面insns.td文件的示例代码：
 通过llvm-tblgen工具还可使用TableGen后端；输入llvm-tblgen --help，会列出所有后端选项。注意此例子没有用LLVM特定的域，它不能用于一个后端。关于TableGen语言的更多信息，请参考网页http://llvm.org/docs/TableGenFundamentals.html。
 
 了解代码生成器.td文件
-****************************
+========================
 
 如前所述，代码生成器广泛地使用TableGen记录来表达目标特定的信息。在这个子小节，我们来浏览一下致力于代码生成的TableGen文件。
 
 目标属性
-================
+-----------------------------
 
 <Target>.td文件（例如，X86.td）定义了所支持的ISA特性和处理器家族。例如，X86.td定义了AVX2扩展：
 
@@ -223,7 +227,7 @@ X86.td文件含有TableGen用以生成X86GenSubtargetInfo.inc文件的部分信�
 如果你查看实现x86Subtarget类的X86Subtarget.cpp文件，你会发现一个C++预处理器指令，”#include “X86GenSubtargetInfo.inc”，这揭示了我们如何在常规的code base中嵌入TableGen生成的C++代码。这个特别的include文件包含了处理器特性常量，处理器特性向量——它关联了特性和它的字符串描述，以及其它相关的资源。
 
 寄存器
-====================
+-----------------------------
 
 寄存器和寄存器类在<Target>RegisterInfo.td文件中定义。寄存器类用于在之后的指令定义中连结指令操作数和特定的寄存器集合。例如，X86RegisterInfo.td用下面的语句定义了16位的寄存器：
 
@@ -254,7 +258,7 @@ GR16寄存器类包含所有的16位寄存器和它们各自的寄存器分配�
 可选地，你可以查看LLVM编译过程中生成的C++文件<LLVM_BUILD_DIR>/lib/Target/X86/X86GenRegisterInfo.inc。这个文件被X86RegisterInfo.cpp包含，辅助它定义X86RegisterInfo类。其中包含了处理器寄存器的枚举，当你在调试你的后端并且不知道数字16表示什么寄存器（这是你的调试器所能给你的最好的猜测）的时候，这个文件是一份有用的参考指引。
 
 指令
-========================
+-----------------------------
 
 指令格式和指令分别在<Target>InstrFormats.td和<Target>InstInfo.td文件中被定义。指令格式包含所必需的指令编码字段，用于写二进制形式的指令，而指令记录表示指令，一条记录表示一条指令。你可以创建中间指令类，就是用于派生指令记录的TableGen类，以析出公共特性因子，例如相似的数据处理指令的共同编码方式。然而，每个指令或者格式必须是Instruction TableGen类的直接或间接的子类，Instruction类在include/llvm/Target/Target.td中被定义。它的字段显示了TableGen后端期望在指令记录中找到什么内容：
 
