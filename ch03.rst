@@ -161,6 +161,7 @@ LLVM的基本设计原则和它的历史
 　　然而，利用独立工具可以实现相同的结果。首先，用不同的参数调用clang，让它为C源文件生成LLVM bitcode，然后就此停止，而不是继续整个编译：
 
 .. code-block:: bash
+
     $ clang -emit-llvm -c main.c -o main.bc
     $ clang -emit-llvm -c sum.c -o sum.bc
 	
