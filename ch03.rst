@@ -1,5 +1,5 @@
 第3章 工具和设计
-###############
+################
 
 　　LLVM项目由若干程序库和工具组成，它们一起构成一套宏大的编译器基础设施。细致的架构设计是连结这些组件的关键。然而，LLVM强调这样的哲学，即一切都是程序库，这样，只有相对少量的代码不是立即可重用的，也不是特定工具的一部分。大量工具让使用者能够通过命令行以多种方式练习程序库。在本章中，我将介绍以下内容：
 
@@ -10,7 +10,7 @@
 * 浏览LLVM源代码的一般建议
 
 LLVM的基本设计原则和它的历史
-***************************
+****************************
 
 　　LLVM以其易于学习闻名于世，它的工具是高度组织的，让好奇的使用者能够观察到编译的很多步骤。这种设计决策可追溯到十多年前它的第1版，当时项目深度专注于后端算法，还依靠GCC将高级语言例如C翻译为LLVM中间表示（IR，Intermediate Representation）。今天，LLVM设计的核心正是它的IR。它使用静态单赋值形式（SSA），具有两个重要特征：
 
@@ -89,7 +89,7 @@ LLVM的基本设计原则和它的历史
         printf("Hello, World!\n");
         return 0;
     }
-	
+
 　　为了生成这个简单程序的可执行文件，执行下面的命令：
 
 .. code-block:: bash
@@ -164,7 +164,7 @@ LLVM的基本设计原则和它的历史
 
     $ clang -emit-llvm -c main.c -o main.bc
     $ clang -emit-llvm -c sum.c -o sum.bc
-	
+
 　　参数-emit-llvm让clang生成LLVM bitcode或LLVM汇编文件，依据输入的参数是-c还是-S。在这个的例子中，参数-emit-llvm和-c让clang生成LLVM bitcode格式的目标文件。用组合参数-flto -c得到相同的结果。如果想要生成LLVM汇编，它是人类可读的，用下面这对命令代替：
 
 .. code-block:: bash
@@ -282,7 +282,7 @@ LLVM的基本设计原则和它的历史
 
 
 在LLVM中强制最好的C++实践
-------------------------
+-------------------------
 
 　　编程时常常无意地产生bug，区别在于如何控制你的bug。LLVM的哲学建议你在任何可能的时候使用libLLVMSupport实现的断言机制。注意，调试编译器是特别困难的，因为编译的产物是一个不同的程序。因此，如果能够更早地发现古怪的行为，在输出变得复杂之前，复杂到不容易确定它是否正确，你将节省很多时间。例如，我们来看一个ARM后端Pass的代码，它修改常量pools的布局，重新分配它们，遍布若干较小的pools“岛屿”，遍布一个函数。ARM程序常常采用这种策略加载大型常量，针对受限的PC相对寻址机制，因为单个大型的pool被置于一个距离指令太远的位置以致指令无法访问它。代码位于llvm/lib/Target/ARM/ARMConstantIslandPass.cpp，下面是它的摘录：
 
@@ -305,7 +305,7 @@ LLVM的基本设计原则和它的历史
 　　如果你有兴趣了解LLVM项目采用的C++最好实践的完整列表，查阅 http://llvm.org/docs/CodingStandards.html 。每个C++程序员值得一读。
 
 在LLVM中让字符串引用轻量化
--------------------------
+--------------------------
 
 　　LLVM项目有大量的数据结构程序库，支持常见的算法，而字符串在LLVM程序库中占据特殊的位置。C++中的字符串是人们激烈讨论的对象：什么时候我们该用简单的char*，相对C++标准库的string类？为了在LLVM上下文中讨论这个问题，考虑LLVM程序库到处密集地使用字符串引用，以引用LLVM模块的名字、函数的名字、值的名字，等等。有些时候，字符串LLVM句柄包含null字符，致使以const char*指针传递常量字符串引用的方法是行不通的，因为null字符终结C类型的字符串。另一方面，使用const std::string&会频繁地引起额外的堆内存分配，因为string类需要拥有字符缓冲区。在下面的例子中我们会看到以上问题：
 
@@ -344,7 +344,7 @@ LLVM的基本设计原则和它的历史
         addPass(createExecutionDependencyFixPass(&X86::VR128RegClass));
         ...
       }
-    
+
       if (getOptLevel() != CodeGenOpt::None &&
           getX86Subtarget().padShortFunctions()) {
         addPass(createX86PadShortFunctions());
@@ -369,14 +369,14 @@ LLVM的基本设计原则和它的历史
 
 　　链接LLVM程序库要编写很长的命令行，不借助编译系统，这是不现实的。在下面的代码中，我们展示一个Makefile用以完成上述工作，它基于DragonEgg所用的Makefile，我们一边呈现一边解释各个部分。如果你复制粘贴此代码，会丢失tab字符；记住Makefile依靠tab字符指定定义规则的命令。因此，你应该手动地输入它们：
 
-.. code-block:: bash
+.. code-block:: make
 
     LLVM_CONFIG?=llvm-config
-    
+
     ifndef VERBOSE
     QUIET:=@
     endif
-    
+
     SRC_DIR?=$(PWD)
     LDFLAGS+=$(shell $(LLVM_CONFIG) --ldflags)
     COMMON_FLAGS=-Wall -Wextra
@@ -392,11 +392,11 @@ LLVM的基本设计原则和它的历史
     HELLO=helloworld
     HELLO_OBJECTS=hello.o
     default: $(HELLO)
-    
+
     %.o : $(SRC_DIR)/%.cpp
         @echo Compiling $*.cpp
         $(QUIET)$(CXX) -c $(CPPFLAGS) $(CXXFLAGS) $<
-    
+
     $(HELLO) : $(HELLO_OBJECTS)
         @echo Linking $@ $(CXXFLAGS) $(LDFLAGS) $^ `$(LLVM_CONFIG) --libs bitreader core support`
 
@@ -432,11 +432,11 @@ LLVM的基本设计原则和它的历史
     #include "llvm/Support/raw_os_ostream.h"
     #include "llvm/Support/system_error.h"
     #include <iostream>
-    
+
     using namespace llvm;
-    
+
     static cl::opt<std::string> FileName(cl::Positional, cl::desc("Bitcode file"), cl::Required);
-    
+
     int main(int argc, char** argv) {
         cl::ParseCommandLineOptions(argc, argv, "LLVM hello world\n");
         LLVMContext context;
@@ -479,7 +479,7 @@ LLVM的基本设计原则和它的历史
 　　然而，远程工作的时候，如大多数社区项目那样，不能会面，口头交流很少。因此，开源社区愈加鼓励人们写作有力的文档。另一方面，文档可能并不是大多数人通常的期望，如一份英语写作的文档，清楚地陈述了所有设计决定。文档很大程度上是代码本身，在这种意义上，为了让他人没有英语文档也能够理解代码的意图，编程者有责任写出清晰的代码。
 
 理解代码如文档
-=============
+==============
 
 　　尽管LLVM的最重要部分都有英语文档，在本书中我们到处引用它们，我们最终的目标是让你准备好直接阅读代码，因为这是深入探索LLVM基础设施的前提。我们向你介绍基础的概念，这是理解LLVM如何工作所必需的，有了它们，你会发现理解LLVM代码所带来的乐趣，无需阅读英语文档，或者能够阅读很多没有任何英语文档的LLVM的部分。尽管这充满挑战，当你开始实践，你将在内心感官上深化对项目的理解，更有信心去修改它。不知不觉地，你将成为一个掌握LLVM本质高级知识的编程者，帮助邮件列表中的其他人。
 
@@ -497,11 +497,15 @@ LLVM的基本设计原则和它的历史
 
 
 处理更新—SVN日志用作文档
-========================
+=========================
 
 　　LLVM项目时常地在变化，你更新LLVM版本之后，可能你的软件不能工作了，它与LLVM程序库交互。这是十分常见的处境。在你重新阅读代码以了解它如何变化之前，查看代码修改日志是有益的。
-　　为了在实践中了解这是怎么工作的，我们来练习将Clang前端从3.4更新到3.5。假设你为静态分析器写了一段代码，实例化一个BugType对象：
-BugType *bugType = new BugType("This is a bug name", "This is a bug category name");
+
+　　为了在实践中了解这是怎么工作的，我们来练习将Clang前端从3.4更新到3.5。假设你为静态分析器写了一段代码，实例化一个 `BugType` 对象：
+
+.. code-block:: cpp
+
+    BugType *bugType = new BugType("This is a bug name", "This is a bug category name");
 
 　　这个对象用于让你自己的检查器（细节见第9章，Clang静态分析器）报告某种bug。现在，让我们将整个LLVM和Clang代码树更新到版本3.5，然后编译以上代码。我们得到以下输出：
 
@@ -517,33 +521,33 @@ BugType *bugType = new BugType("This is a bug name", "This is a bug category nam
 
 .. note::
 
-    如果你在用文本模式的编辑器，一定用工具导航LLVM源代码。比如，花一点时间看看如何在你的编辑器中使用CTAGS。你将轻易地在LLVM源代码树中找到定义你所感兴趣的类的每个文件。如果你固执地不想用CTAGS或其它工具（例如Visual Studio的IntelliSense或Xcode），帮助你导航大型C/C++项目，你总是可以运用一个命令，例如grep -re "keyword" *，在项目的根目录中执行它，以列出所有包含此关键词的文件。通过使用智能关键词，你可以轻易地找到定义文件。
+    如果你在用文本模式的编辑器，一定用工具导航LLVM源代码。比如，花一点时间看看如何在你的编辑器中使用CTAGS。你将轻易地在LLVM源代码树中找到定义你所感兴趣的类的每个文件。如果你固执地不想用CTAGS或其它工具（例如Visual Studio的IntelliSense或Xcode），帮助你导航大型C/C++项目，你总是可以运用一个命令，例如 `grep -re "keyword" *` ，在项目的根目录中执行它，以列出所有包含此关键词的文件。通过使用智能关键词，你可以轻易地找到定义文件。
 
 　　为了查看作用这个具体的头文件的提交消息，我们访问 http://llvm.org/viewvc/llvm-project/cfe/trunk/include/clang/StaticAnalyzer/Core/BugReporter/BugType.h?view=log ，它在浏览器中打印出日志。现在，我们看到一次具体的修订，发生在写作此书三个月之前，当时LLVM更新到v3.5：
 
 .. code-block:: bash
 
-    Revision 201186 - (view) (download) (annotate) - [select for diffs] 
+    Revision 201186 - (view) (download) (annotate) - [select for diffs]
     Modified Tue Feb 11 15:49:21 2014 CST (3 months, 1 week ago) by alexfh
     File length: 2618 byte(s)
     Diff to previous 198686
-    
+
     Expose the name of the checker producing each diagnostic message.
-    
+
     Summary:
     In clang-tidy we'd like to know the name of the checker producing each
     diagnostic message. PathDiagnostic has BugType and Category fields, which are
     both arbitrary human-readable strings, but we need to know the exact name of the
     checker in the form that can be used in the CheckersControlList option to
     enable/disable the specific checker.
-    
+
     This patch adds the CheckName field to the CheckerBase class, and sets it in
     the CheckerManager::registerChecker() method, which gets them from the
     CheckerRegistry.
 
     Checkers that implement multiple checks have to store the names of each check
     in the respective registerXXXChecker method.
-    
+
     Reviewers: jordan_rose, krememek
     Reviewed By: jordan_rose
     CC: cfe-commits
@@ -568,4 +572,3 @@ BugType *bugType = new BugType("This is a bug name", "This is a bug category nam
 　　在本章中，我们从历史的视角向你介绍了LLVM项目采用的设计决策，概述了若干最重要的组成部分。我们还演示了如何以两种不同的方式使用LLVM组件。第一，通过使用编译器驱动器，它作为一种高层工具以单个命令为你执行整个编译过程。第二，通过使用单独的LLVM独立工具。除了存储中间结果到磁盘，这降低了编译速度，这些工具通过命令行让我们能够与LLVM程序库的特定部分交互，更精细地控制编译过程。这是学习LLVM如何工作的卓越的方法。我们还介绍了一些LLVM用到的C++编码风格，解释了你该如何面对LLVM代码文档，以及如何向社区求助。
 
 　　在下一章，我们将详细介绍Clang前端的实现和它的程序库。
-
