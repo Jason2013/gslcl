@@ -211,7 +211,7 @@ LLVM的基本设计原则和它的历史
 
 　　LLVM和Clang逻辑被精心地组织成如下的程序库：
 
-* libLLVMCore：包含所以LLVM IR相关的逻辑：IR构造（数据布局、指令、基本块、函数）和IR验证。它也提供Pass管理器。
+* libLLVMCore：包含所有LLVM IR相关的逻辑：IR构造（数据布局、指令、基本块、函数）和IR验证。它也提供Pass管理器。
 * libLLVMAnalysis：包含若干IR分析Pass，例如别名分析、依赖分析、常量合并、循环信息、内存依赖分析、指令简化等。
 * libLLVMCodeGen：实现了目标无关的代码生成和机器层次（低层版本LLVM IR）的分析和转换。
 * libLLVMTarget：通过通用目标抽象，提供对目标机器信息的访问。libLLVMCodeGen实现了通用后端算法，目标特定的逻辑留给了即将介绍的下一个库，而高层抽象为两者提供了交流的通道。
