@@ -94,7 +94,7 @@
 
     target datalayout = "e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:64:64-v64:64:64-v128:128:128-a0:0:64-s0:64:64-f80:128:128-n8:16:32:64-S128"
     target triple = "x86_64-apple-macosx10.7.0"
-    
+
     define i32 @sum(i32 %a, i32 %b) #0 {
     entry:
       %a.addr = alloca i32, align 4
@@ -106,7 +106,7 @@
       %add = add nsw i32 %0, %1
       ret i32 %add
     }
-    
+
     attributes #0 = { nounwind ssp uwtable ... }
 
 　　整个LLVM文件的内容，无论汇编或者bitcode，定义了一个所谓的LLVM模块（module）。模块是LLVM IR的顶层数据结构。每个模块包含一系列函数，每个函数包含一系列基本块，每个基本块包含一系列指令。模块还包含一些外围实体以支持其模型，例如全局变量、目标数据布局、外部函数原型，还有数据结构声明。
@@ -254,7 +254,7 @@
 
 .. code-block:: cpp
 
-    Function *funcSum = 
+    Function *funcSum =
         Function::Create(FuncTy, GlobalValue::ExternalLinkage, "sum", mod);
     funcSum->setCallingConv(CallingConv::C);
 
@@ -272,19 +272,19 @@
 
 .. code-block:: cpp
 
-    BasicBlock *labelEntry = 
+    BasicBlock *labelEntry =
         BasicBlock::Create(mod->getContext(), "entry", funcSum, 0);
 
 　　6. 现在基本块entry已准备好填充指令了。我们为基本块添加两个alloca指令，建立4字节对齐的32-bit栈元素。调用指令的构建的方法时，需要给出指令所属基本块的引用。默认地，新的指令被插入到基本块的末尾，如下：
 
 .. code-block:: cpp
 
-    AllocaInst *ptrA = 
-        new AllocaInst(IntegerType::get(mod->getContext(), 32), "a.addr", 
+    AllocaInst *ptrA =
+        new AllocaInst(IntegerType::get(mod->getContext(), 32), "a.addr",
                      labelEntry);
     ptrA->setAlignment(4);
-    AllocaInst *ptrB = 
-        new AllocaInst(IntegerType::get(mod->getContext(), 32), "b.addr", 
+    AllocaInst *ptrB =
+        new AllocaInst(IntegerType::get(mod->getContext(), 32), "b.addr",
                      labelEntry);
     ptrB->setAlignment(4);
 
@@ -309,11 +309,11 @@
     ld0->setAlignment(4);
     LoadInst *ld1 = new LoadInst(ptrB, "", false, labelEntry);
     ld1->setAlignment(4);
-    
+
     BinaryOperator *addRes = BinaryOperator::Create(Instruction::Add, ld0, ld1,
                                                     "add", labelEntry);
     ReturnInst::Create(mod->getContext(), addRes, labelEntry);
-    
+
     return mod;
 
 .. note::
@@ -563,15 +563,15 @@ IR层次的优化
     #include "llvm/IR/Function.h"
     #include "llvm/Pass.h"
     #include "llvm/Support/raw_ostream.h"
-    
+
     using namespace llvm;
-    
+
     namespace {
       class FnArgCnt : public FunctionPass {
       public:
         static char ID;
         FnArgCnt() : FunctionPass(ID) {}
-    
+
         virtual bool runOnFunction(Function &F) {
           errs() << "FnArgCnt --- ";
           errs() << F.getName() << ": ";
@@ -580,7 +580,7 @@ IR层次的优化
         }
       };
     }
-    
+
     char FnArgCnt::ID = 0;
     static RegisterPass<FnArgCnt> X("fnargcnt", "Function Argument Count Pass", false, false);
 
@@ -591,19 +591,19 @@ IR层次的优化
     #include "llvm/IR/Function.h"
     #include "llvm/Pass.h"
     #include "llvm/Support/raw_ostream.h"
-    
+
     using namespace llvm;
 
 　　接着，我们声明FnArgCnt——我们的函数Pass子类——并在runOnFunction()方法中实现主要的Pass功能。在每个函数的上下文中，我们打印函数名字和它接收的参数的数目。这个函数返回false，因为没有修改被分析的函数。我们的子类的代码如下：
 
 .. code-block:: cpp
-    
+
     namespace {
       class FnArgCnt : public FunctionPass {
       public:
         static char ID;
         FnArgCnt() : FunctionPass(ID) {}
-    
+
         virtual bool runOnFunction(Function &F) {
           errs() << "FnArgCnt --- ";
           errs() << F.getName() << ": ";
@@ -636,17 +636,17 @@ IR层次的优化
 .. code-block:: bash
 
     # Makefile for FnArgCnt pass
-    
+
     # Path to top level of LLVM hierarchy
     LEVEL = ../../..
-    
+
     # Name of the library to build
     LIBRARYNAME = LLVMFnArgCnt
-    
+
     # Make the shared library become a loadable module so the tools can
     # dlopen/dlsym on the resulting library.
     LOADABLE_MODULE = 1
-    
+
     # Include the makefile implementation stuff
     include $(LEVEL)/Makefile.common
 
@@ -695,36 +695,36 @@ IR层次的优化
 .. code-block:: bash
 
     LLVM_CONFIG?=llvm-config
-    
+
     ifndef VERBOSE
     QUIET:=@
     endif
-    
+
     SRC_DIR?=$(PWD)
     LDFLAGS+=$(shell $(LLVM_CONFIG) --ldflags)
     COMMON_FLAGS=-Wall -Wextra
     CXXFLAGS+=$(COMMON_FLAGS) $(shell $(LLVM_CONFIG) --cxxflags) -fno-rtti
     CPPFLAGS+=$(shell $(LLVM_CONFIG) --cppflags) -I$(SRC_DIR)
-    
+
     ifeq ($(shell uname),Darwin)
     LOADABLE_MODULE_OPTIONS=-bundle -undefined dynamic_lookup
     else
     LOADABLE_MODULE_OPTIONS=-shared -Wl,-O1
     endif
-    
+
     FNARGPASS=fnarg.so
     FNARGPASS_OBJECTS=FnArgCnt.o
-    
+
     default: $(FNARGPASS)
-    
+
     %.o : $(SRC_DIR)/%.cpp
     	@echo Compiling $*.cpp
     	$(QUIET)$(CXX) -c $(CPPFLAGS) $(CXXFLAGS) $<
-    
+
     $(FNARGPASS) : $(FNARGPASS_OBJECTS)
     	@echo Linking $@
     	$(QUIET)$(CXX) -o $@ $(LOADABLE_MODULE_OPTIONS) $(CXXFLAGS) $(LDFLAGS) $^
-    
+
     clean::
     	$(QUIET)rm -rf $(FNARGPASS_OBJECTS) $(FNARGPASS)
 
