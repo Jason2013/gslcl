@@ -113,7 +113,7 @@
 
 　　LLVM局部值是汇编语言中的寄存器的模拟，有一个以%符号开头的任意的名字。如此，%add = add nsw i32 %0, %1表示相加局部值%0和%1，结果存放到新的局部值%add。你可自由地赋予这些值任意的名字，但是如果你缺乏创造力，你可以只是用数字。在这个短小的例子中，我们已然看到LLVM如何表达它的基本性质：
 
-* 它采用静态单赋值（SSA）形式。注意没有一个值是被重复赋值的；每个值只有单一赋值定义了它。每次使用一个值，可以立刻向后追溯到给出其定义的唯一的指令。这可以极大地简化优化，因为SSA形式建立了平凡的use-def链，也就是一个值到达使用之处的定义的列表。如果LLVM不采用SSA形式，我们将需要单独运行一次数据流分析，以计算use-def链，对于经典的优化，这是必不可少的，例如常量传播和公同子表达式消除。
+* 它采用静态单赋值（SSA）形式。注意没有一个值是被重复赋值的；每个值只有单一赋值定义了它。每次使用一个值，可以立刻向后追溯到给出其定义的唯一的指令。这可以极大地简化优化，因为SSA形式建立了平凡的use-def链，也就是一个值到达使用之处的定义的列表。如果LLVM不采用SSA形式，我们将需要单独运行一次数据流分析，以计算use-def链，对于经典的优化，这是必不可少的，例如常量传播和公共子表达式消除。
 * 它以三地址指令组织代码。数据处理指令有两个源操作数，有一个独特的目标操作数以存放结果。
 * 它有无限数量的寄存器。注意LLVM局部值可以命名为任意以%符号开头的名字，包括从0开始的数字，例如%0，%1，等等，不限制不同的值的最大数量。
 
@@ -206,10 +206,10 @@
 
 　　利用LLVM IR生成器API，程序化地为sum.ll构建IR（sum.ll是以-O0优化级别创建的，即没有优化），这是可能的。在这个小节，我们将一步一步地介绍如何实现它。首先，看一看我们需要的头文件：
 
-* #include <llvm/ADT/SmallVector.h>：这是为了引入SmallVector<>模板，这个数据结构帮助我们构建高效的向量，当元素数量不大的时候。查看 http://llvm.org/docs/ProgrammersManual.html关于LLVM数据结构的介绍。
+* #include <llvm/ADT/SmallVector.h>：这是为了引入SmallVector<>模板，这个数据结构帮助我们构建高效的向量，当元素数量不大的时候。查看 http://llvm.org/docs/ProgrammersManual.html 关于LLVM数据结构的介绍。
 * #include <llvm/Analysis/Verifier.h>：验证Pass是一个重要的分析，检查你的LLVM模块是否恰当地被构建，遵从IR规则。
 * #include <llvm/IR/BasicBlock.h>：这个头文件声明BasicBlock类，这是我们已经介绍过的重要的IR实体。
-* #include <llvm/IR/CallingConv.h>这个头文件定义函数调用用到的一套ABI规则，例如在何处存储函数参数。
+* #include <llvm/IR/CallingConv.h>：这个头文件定义函数调用用到的一套ABI规则，例如在何处存储函数参数。
 * #include <llvm/IR/Function.h>：这个头文件声明Function类，一种IR实体。
 * #include <llvm/IR/Instructions.h>：这个头文件声明Instruction类的所有子类，一种基本的IR数据结构。
 * #include <llvm/IR/LLVMContext.h>：这个头文件存储LLVM程序库的全局域数据，每个线程使用不同的context，让多线程实现正确工作。
@@ -508,9 +508,9 @@ IR层次的优化
 
 * 显式依赖：转换Pass需要一种分析，则Pass管理器自动地安排它所依赖的分析Pass在它之前运行。如果你运行单个Pass，它依赖其它Pass，则Pass管理器会无声地安排必需的Pass在它之前运行。Loop Info和Dominator Tree就是这种分析的例子，它们为其它Pass提供信息。支配者树（dominator tree）是重要的数据结构，它让SSA构建算法能够决定在何处放置phi函数。这样，举例来说，mem2reg在其实现中请求支配者树，通过建立这两个Pass之间的依赖关系：
 
-    .. code-block:: cpp
+.. code-block:: cpp
     
-        DominatorTree &DT = getAnalysis<DominatorTree>(Func);
+    DominatorTree &DT = getAnalysis<DominatorTree>(Func);
 
 * 隐式依赖：有些转换或者分析Pass要求IR代码运用特定的成语。以这种方式，它可以轻易地识别模式，即使IR有许多表达相同计算的其它方式。举例来说，如果一个Pass专门地被设计成刚好在另一个转换Pass之后运行，这种隐式依赖就可能出现。因此，这个Pass可能特殊地处理符合特定成语句式的代码（来自前一个Pass）。这种情况，因为这种微妙的依赖是对于一个转换Pass，而不是分析Pass，所以你需要手动地以正确的顺序把这个Pass加到Pass队列中，通过命令行工具（clang或者opt）或者Pass管理器。如果进来的IR不使用这个Pass所期望的成语，这个Pass就无声地跳过其转换，因为它无法匹配代码。一个给定的优化级别所包含的Pass集合是自包含的，不会出现依赖问题。
 　　
@@ -596,7 +596,7 @@ IR层次的优化
 
 　　接着，我们声明FnArgCnt——我们的函数Pass子类——并在runOnFunction()方法中实现主要的Pass功能。在每个函数的上下文中，我们打印函数名字和它接收的参数的数目。这个函数返回false，因为没有修改被分析的函数。我们的子类的代码如下：
 
-    .. code-block:: cpp
+.. code-block:: cpp
     
     namespace {
       class FnArgCnt : public FunctionPass {
