@@ -508,9 +508,9 @@ IR层次的优化
 
 * 显式依赖：转换Pass需要一种分析，则Pass管理器自动地安排它所依赖的分析Pass在它之前运行。如果你运行单个Pass，它依赖其它Pass，则Pass管理器会无声地安排必需的Pass在它之前运行。Loop Info和Dominator Tree就是这种分析的例子，它们为其它Pass提供信息。支配者树（dominator tree）是重要的数据结构，它让SSA构建算法能够决定在何处放置phi函数。这样，举例来说，mem2reg在其实现中请求支配者树，通过建立这两个Pass之间的依赖关系：
 
-.. code-block:: cpp
-    
-    DominatorTree &DT = getAnalysis<DominatorTree>(Func);
+    .. code-block:: cpp
+
+        DominatorTree &DT = getAnalysis<DominatorTree>(Func);
 
 * 隐式依赖：有些转换或者分析Pass要求IR代码运用特定的成语。以这种方式，它可以轻易地识别模式，即使IR有许多表达相同计算的其它方式。举例来说，如果一个Pass专门地被设计成刚好在另一个转换Pass之后运行，这种隐式依赖就可能出现。因此，这个Pass可能特殊地处理符合特定成语句式的代码（来自前一个Pass）。这种情况，因为这种微妙的依赖是对于一个转换Pass，而不是分析Pass，所以你需要手动地以正确的顺序把这个Pass加到Pass队列中，通过命令行工具（clang或者opt）或者Pass管理器。如果进来的IR不使用这个Pass所期望的成语，这个Pass就无声地跳过其转换，因为它无法匹配代码。一个给定的优化级别所包含的Pass集合是自包含的，不会出现依赖问题。
 　　
