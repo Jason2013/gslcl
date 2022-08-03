@@ -723,7 +723,7 @@ Clang项目为使用者提供了三种接口，以利用Clang的特性和它的�
 
 AST匹配器库让它的使用者能够轻松地匹配符合特定断言的Clang AST的子树，例如，表示对一个函数的调用的所有AST节点，它的名字为calloc，并且有两个参数。查找特定的Clang AST节点并修改它们，这是每个代码重构工具共同的基本任务，对这个库的利用极大地减轻了编写此类工具的任务。
 
-为了帮助我们找到正确的匹配器，我们会依靠Clang Query和AST匹配器文档，文档在此处可获得：http://clang. llvm.org/docs/LibASTMatchersReference.html。
+为了帮助我们找到正确的匹配器，我们会依靠Clang Query和AST匹配器文档，文档在此处可获得：http://clang.llvm.org/docs/LibASTMatchersReference.html。
 
 我们先为你的工具编写一个名为wildlifesim.cpp的测试案例。这是一个复杂的一维动物生活模拟器，其中的动物可以沿着直线向任何方向行走：
 
