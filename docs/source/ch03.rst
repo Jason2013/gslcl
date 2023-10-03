@@ -398,7 +398,8 @@ LLVM的基本设计原则和它的历史
         $(QUIET)$(CXX) -c $(CPPFLAGS) $(CXXFLAGS) $<
 
     $(HELLO) : $(HELLO_OBJECTS)
-        @echo Linking $@ $(CXXFLAGS) $(LDFLAGS) $^ `$(LLVM_CONFIG) --libs bitreader core support`
+        @echo Linking $@
+        $(QUIET)$(CXX) -o $@ $(CXXFLAGS) $(LDFLAGS) $^ `$(LLVM_CONFIG) --libs bitreader core support`
 
 　　这第二部分定义了Makefile规则。第一条规则总是默认规则，我们将它关联为编译我们的hello-world可执行文件。第二条规则是通用规则，将所有C++文件编译为目标文件。我们传给它预处理选项和C++编译器选项。我们用$(QUIET)变量关闭全部窗口命令行输出，但是如果你想要冗长的编译日志，可以在运行GNU Make时定义VERBOSE。
 
